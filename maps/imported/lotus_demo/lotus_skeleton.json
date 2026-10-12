@@ -1,0 +1,1147 @@
+{
+  "schema": "agnes.building_skeleton.exchange.v1",
+  "schema_version": 1,
+  "metadata": {
+    "id": "lotus_demo_static",
+    "name": "莲华古城 Lotus · A/B/C 静态演示简化骨架",
+    "asset_license": "Project-authored schematic geometry; VALORANT and Lotus names belong to Riot Games.",
+    "fidelity": "NON_OFFICIAL_TOPOLOGY_INSPIRED_SCHEMATIC_NOT_GAME_SURVEY",
+    "reference_url": "https://playvalorant.com/en-gb/news/dev/lotus-unearthing-valorant-s-lost-city/",
+    "reference_note": "Reference supports three sites, two rotating doors and an A/B breakable connector. Zone dimensions, placement and some connections below are original approximations, not extracted or surveyed game geometry and not a guarantee of current game-patch fidelity.",
+    "usage": "STATIC_PREVIEW_ONLY; do not activate without a separate physics and safety review.",
+    "scale_note": "Coordinates are original demo metres, x right / y up, 2D flattened; not real game scale.",
+    "physics_limitations": [
+      "No elevation, silent-drop or rope physics",
+      "Rotating doors are annotated only; current importer does not simulate Lotus mechanics",
+      "A/B breakable wall is a static reference, not destructible runtime geometry",
+      "Schema validation is not collision, navigability or game-layout certification"
+    ],
+    "conditional_links": [
+      {
+        "connects": [
+          "A_Main",
+          "A_Link"
+        ],
+        "condition": "Reference breakable wall destroyed; runtime state UNKNOWN"
+      }
+    ]
+  },
+  "coordinate_frame": "map",
+  "boundary": {
+    "min_x": -24,
+    "max_x": 24,
+    "min_y": -20,
+    "max_y": 20
+  },
+  "walls": [
+    {
+      "id": "outline_1",
+      "a": [
+        -5,
+        -18
+      ],
+      "b": [
+        5,
+        -18
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_2",
+      "a": [
+        -18,
+        -14
+      ],
+      "b": [
+        -5,
+        -14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_3",
+      "a": [
+        5,
+        -14
+      ],
+      "b": [
+        21,
+        -14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_4",
+      "a": [
+        -12,
+        -10
+      ],
+      "b": [
+        -4,
+        -10
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_5",
+      "a": [
+        4,
+        -10
+      ],
+      "b": [
+        9,
+        -10
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_6",
+      "a": [
+        -12,
+        -6
+      ],
+      "b": [
+        -4,
+        -6
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_7",
+      "a": [
+        -12,
+        -2
+      ],
+      "b": [
+        -4,
+        -2
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_8",
+      "a": [
+        -22,
+        1
+      ],
+      "b": [
+        -18,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_9",
+      "a": [
+        -12,
+        1
+      ],
+      "b": [
+        -4,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_10",
+      "a": [
+        4,
+        1
+      ],
+      "b": [
+        9,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_11",
+      "a": [
+        15,
+        1
+      ],
+      "b": [
+        21,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_12",
+      "a": [
+        15,
+        3
+      ],
+      "b": [
+        21,
+        3
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_13",
+      "a": [
+        -8,
+        5
+      ],
+      "b": [
+        -4,
+        5
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_14",
+      "a": [
+        4,
+        5
+      ],
+      "b": [
+        9,
+        5
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_15",
+      "a": [
+        -12,
+        8
+      ],
+      "b": [
+        -8,
+        8
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_16",
+      "a": [
+        13,
+        8
+      ],
+      "b": [
+        17,
+        8
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_17",
+      "a": [
+        -12,
+        12
+      ],
+      "b": [
+        -4,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_18",
+      "a": [
+        4,
+        12
+      ],
+      "b": [
+        9,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_19",
+      "a": [
+        13,
+        12
+      ],
+      "b": [
+        17,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_20",
+      "a": [
+        -22,
+        14
+      ],
+      "b": [
+        -4,
+        14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_21",
+      "a": [
+        4,
+        14
+      ],
+      "b": [
+        17,
+        14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_22",
+      "a": [
+        17,
+        16
+      ],
+      "b": [
+        21,
+        16
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_23",
+      "a": [
+        -4,
+        18
+      ],
+      "b": [
+        4,
+        18
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_24",
+      "a": [
+        -22,
+        1
+      ],
+      "b": [
+        -22,
+        14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_25",
+      "a": [
+        -18,
+        -14
+      ],
+      "b": [
+        -18,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_26",
+      "a": [
+        -12,
+        -10
+      ],
+      "b": [
+        -12,
+        -6
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_27",
+      "a": [
+        -12,
+        -2
+      ],
+      "b": [
+        -12,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_28",
+      "a": [
+        -12,
+        8
+      ],
+      "b": [
+        -12,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_29",
+      "a": [
+        -8,
+        5
+      ],
+      "b": [
+        -8,
+        8
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_30",
+      "a": [
+        -5,
+        -18
+      ],
+      "b": [
+        -5,
+        -14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_31",
+      "a": [
+        -4,
+        -10
+      ],
+      "b": [
+        -4,
+        -6
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_32",
+      "a": [
+        -4,
+        -2
+      ],
+      "b": [
+        -4,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_33",
+      "a": [
+        -4,
+        5
+      ],
+      "b": [
+        -4,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_34",
+      "a": [
+        -4,
+        14
+      ],
+      "b": [
+        -4,
+        18
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_35",
+      "a": [
+        4,
+        -10
+      ],
+      "b": [
+        4,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_36",
+      "a": [
+        4,
+        5
+      ],
+      "b": [
+        4,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_37",
+      "a": [
+        4,
+        14
+      ],
+      "b": [
+        4,
+        18
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_38",
+      "a": [
+        5,
+        -18
+      ],
+      "b": [
+        5,
+        -14
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_39",
+      "a": [
+        9,
+        -10
+      ],
+      "b": [
+        9,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_40",
+      "a": [
+        9,
+        5
+      ],
+      "b": [
+        9,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_41",
+      "a": [
+        13,
+        8
+      ],
+      "b": [
+        13,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_42",
+      "a": [
+        15,
+        1
+      ],
+      "b": [
+        15,
+        3
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_43",
+      "a": [
+        17,
+        8
+      ],
+      "b": [
+        17,
+        12
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_44",
+      "a": [
+        17,
+        14
+      ],
+      "b": [
+        17,
+        16
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_45",
+      "a": [
+        21,
+        -14
+      ],
+      "b": [
+        21,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "outline_46",
+      "a": [
+        21,
+        3
+      ],
+      "b": [
+        21,
+        16
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "A_Main_Tree_partition",
+      "a": [
+        15,
+        -6
+      ],
+      "b": [
+        15,
+        1
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "C_rotating_partition",
+      "a": [
+        -12,
+        -6
+      ],
+      "b": [
+        -12,
+        -2
+      ],
+      "thickness": 0.2,
+      "height": 2.5
+    },
+    {
+      "id": "AB_breakable_reference",
+      "a": [
+        9,
+        1
+      ],
+      "b": [
+        9,
+        3
+      ],
+      "thickness": 0.2,
+      "height": 2.5,
+      "reference_only": true
+    }
+  ],
+  "rooms": [
+    {
+      "id": "Attacker_Spawn",
+      "name": "Attacker Spawn",
+      "type": "room",
+      "bounds": {
+        "min_x": -5,
+        "max_x": 5,
+        "min_y": -18,
+        "max_y": -14
+      },
+      "connectors": [
+        "Attacker_Lobby"
+      ]
+    },
+    {
+      "id": "C_Site",
+      "name": "C Site",
+      "type": "room",
+      "bounds": {
+        "min_x": -22,
+        "max_x": -12,
+        "min_y": 1,
+        "max_y": 8
+      },
+      "connectors": [
+        "C_Main",
+        "C_Bend",
+        "C_Link",
+        "C_Water",
+        "C_Hall"
+      ]
+    },
+    {
+      "id": "B_Site",
+      "name": "B Site",
+      "type": "room",
+      "bounds": {
+        "min_x": -4,
+        "max_x": 4,
+        "min_y": 1,
+        "max_y": 8
+      },
+      "connectors": [
+        "C_Link",
+        "B_Main",
+        "B_Upper",
+        "A_Link"
+      ]
+    },
+    {
+      "id": "A_Tree",
+      "name": "A Tree",
+      "type": "room",
+      "bounds": {
+        "min_x": 15,
+        "max_x": 21,
+        "min_y": -10,
+        "max_y": 1
+      },
+      "connectors": [
+        "Attacker_Lobby",
+        "A_Rubble",
+        "A_Main",
+        "A_Root"
+      ]
+    },
+    {
+      "id": "A_Site",
+      "name": "A Site",
+      "type": "room",
+      "bounds": {
+        "min_x": 9,
+        "max_x": 21,
+        "min_y": 3,
+        "max_y": 8
+      },
+      "connectors": [
+        "A_Link",
+        "A_Main",
+        "A_Stairs",
+        "A_Drop"
+      ]
+    },
+    {
+      "id": "Defender_Spawn",
+      "name": "Defender Spawn",
+      "type": "room",
+      "bounds": {
+        "min_x": -4,
+        "max_x": 4,
+        "min_y": 14,
+        "max_y": 18
+      },
+      "connectors": [
+        "Defender_Route"
+      ]
+    }
+  ],
+  "corridors": [
+    {
+      "id": "Attacker_Lobby",
+      "name": "Attacker Lobby",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -18,
+        "max_x": 18,
+        "min_y": -14,
+        "max_y": -10
+      },
+      "connectors": [
+        "Attacker_Spawn",
+        "C_Mound",
+        "B_Main",
+        "A_Rubble",
+        "A_Root",
+        "A_Tree"
+      ]
+    },
+    {
+      "id": "C_Mound",
+      "name": "C Mound",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -18,
+        "max_x": -12,
+        "min_y": -10,
+        "max_y": -6
+      },
+      "connectors": [
+        "Attacker_Lobby",
+        "C_Main"
+      ]
+    },
+    {
+      "id": "C_Main",
+      "name": "C Main",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -18,
+        "max_x": -12,
+        "min_y": -6,
+        "max_y": 1
+      },
+      "connectors": [
+        "C_Mound",
+        "C_Door_Link",
+        "C_Site"
+      ]
+    },
+    {
+      "id": "C_Door_Link",
+      "name": "C Door Link",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -12,
+        "max_x": -4,
+        "min_y": -6,
+        "max_y": -2
+      },
+      "connectors": [
+        "C_Main",
+        "B_Main"
+      ]
+    },
+    {
+      "id": "C_Bend",
+      "name": "C Bend",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -12,
+        "max_x": -8,
+        "min_y": 5,
+        "max_y": 8
+      },
+      "connectors": [
+        "C_Site",
+        "C_Link"
+      ]
+    },
+    {
+      "id": "C_Link",
+      "name": "C Link",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -12,
+        "max_x": -4,
+        "min_y": 1,
+        "max_y": 5
+      },
+      "connectors": [
+        "C_Site",
+        "C_Bend",
+        "B_Site"
+      ]
+    },
+    {
+      "id": "C_Water",
+      "name": "C Water",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -18,
+        "max_x": -12,
+        "min_y": 8,
+        "max_y": 12
+      },
+      "connectors": [
+        "C_Site",
+        "C_Hall",
+        "Defender_Route"
+      ]
+    },
+    {
+      "id": "C_Hall",
+      "name": "C Hall",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -22,
+        "max_x": -18,
+        "min_y": 8,
+        "max_y": 14
+      },
+      "connectors": [
+        "C_Site",
+        "C_Water",
+        "Defender_Route"
+      ]
+    },
+    {
+      "id": "B_Main",
+      "name": "B Main",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -4,
+        "max_x": 4,
+        "min_y": -10,
+        "max_y": 1
+      },
+      "connectors": [
+        "Attacker_Lobby",
+        "C_Door_Link",
+        "B_Site"
+      ]
+    },
+    {
+      "id": "B_Upper",
+      "name": "B Upper",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -4,
+        "max_x": 4,
+        "min_y": 8,
+        "max_y": 12
+      },
+      "connectors": [
+        "B_Site",
+        "Defender_Route"
+      ]
+    },
+    {
+      "id": "A_Link",
+      "name": "A Link",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 4,
+        "max_x": 9,
+        "min_y": 1,
+        "max_y": 5
+      },
+      "connectors": [
+        "B_Site",
+        "A_Main",
+        "A_Site"
+      ]
+    },
+    {
+      "id": "A_Rubble",
+      "name": "A Rubble",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 9,
+        "max_x": 15,
+        "min_y": -10,
+        "max_y": -6
+      },
+      "connectors": [
+        "Attacker_Lobby",
+        "A_Main",
+        "A_Tree"
+      ]
+    },
+    {
+      "id": "A_Main",
+      "name": "A Main",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 9,
+        "max_x": 15,
+        "min_y": -6,
+        "max_y": 3
+      },
+      "connectors": [
+        "A_Link",
+        "A_Rubble",
+        "A_Tree",
+        "A_Site"
+      ]
+    },
+    {
+      "id": "A_Root",
+      "name": "A Root",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 15,
+        "max_x": 21,
+        "min_y": -14,
+        "max_y": -10
+      },
+      "connectors": [
+        "Attacker_Lobby",
+        "A_Tree"
+      ]
+    },
+    {
+      "id": "A_Stairs",
+      "name": "A Stairs",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 9,
+        "max_x": 13,
+        "min_y": 8,
+        "max_y": 12
+      },
+      "connectors": [
+        "A_Site",
+        "Defender_Route"
+      ]
+    },
+    {
+      "id": "A_Drop",
+      "name": "A Drop",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 17,
+        "max_x": 21,
+        "min_y": 8,
+        "max_y": 12
+      },
+      "connectors": [
+        "A_Site",
+        "A_Top"
+      ]
+    },
+    {
+      "id": "A_Top",
+      "name": "A Top",
+      "type": "corridor",
+      "bounds": {
+        "min_x": 17,
+        "max_x": 21,
+        "min_y": 12,
+        "max_y": 16
+      },
+      "connectors": [
+        "A_Drop",
+        "Defender_Route"
+      ]
+    },
+    {
+      "id": "Defender_Route",
+      "name": "Defender Route",
+      "type": "corridor",
+      "bounds": {
+        "min_x": -22,
+        "max_x": 17,
+        "min_y": 12,
+        "max_y": 14
+      },
+      "connectors": [
+        "C_Water",
+        "C_Hall",
+        "B_Upper",
+        "A_Stairs",
+        "A_Top",
+        "Defender_Spawn"
+      ]
+    }
+  ],
+  "doors": [
+    {
+      "id": "A_Rotating_Door",
+      "at": [
+        15,
+        -3
+      ],
+      "width": 2,
+      "orientation": 1.5707963267948966,
+      "connects": [
+        "A_Main",
+        "A_Tree"
+      ],
+      "mechanism": "revolving",
+      "interaction_pose": {
+        "x": 14,
+        "y": -3,
+        "yaw": 0
+      }
+    },
+    {
+      "id": "C_Rotating_Door",
+      "at": [
+        -12,
+        -4
+      ],
+      "width": 2,
+      "orientation": 1.5707963267948966,
+      "connects": [
+        "C_Main",
+        "C_Door_Link"
+      ],
+      "mechanism": "revolving",
+      "interaction_pose": {
+        "x": -13,
+        "y": -4,
+        "yaw": 0
+      }
+    }
+  ],
+  "connectors": [],
+  "start_poses": [
+    {
+      "id": "Start",
+      "name": "Demo Start",
+      "x": 0,
+      "y": -16,
+      "yaw": 1.5707963267948966,
+      "semantic_location": "Attacker_Spawn",
+      "connectors": [
+        "Attacker_Spawn"
+      ]
+    }
+  ],
+  "semantic_names": {
+    "Attacker Spawn": "Attacker_Spawn",
+    "Attacker Lobby": "Attacker_Lobby",
+    "C Mound": "C_Mound",
+    "C Main": "C_Main",
+    "C Door Link": "C_Door_Link",
+    "C Site": "C_Site",
+    "C Bend": "C_Bend",
+    "C Link": "C_Link",
+    "C Water": "C_Water",
+    "C Hall": "C_Hall",
+    "B Main": "B_Main",
+    "B Site": "B_Site",
+    "B Upper": "B_Upper",
+    "A Link": "A_Link",
+    "A Rubble": "A_Rubble",
+    "A Main": "A_Main",
+    "A Root": "A_Root",
+    "A Tree": "A_Tree",
+    "A Site": "A_Site",
+    "A Stairs": "A_Stairs",
+    "A Drop": "A_Drop",
+    "A Top": "A_Top",
+    "Defender Route": "Defender_Route",
+    "Defender Spawn": "Defender_Spawn"
+  },
+  "optional_navigation_constraints": {
+    "resolution": 0.1
+  }
+}
