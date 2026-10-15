@@ -1,23 +1,28 @@
 /** Image-only perception via official Agnes SDK. Never reads credentials or world files. */
-import { readFile } from "node:fs/promises";
+import { readFile,appendFile,mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { visualTurnFailure } from "./vlm-turn.ts";
 import { createInterface } from "node:readline";
+import { VISUAL_INSPECTION_PROMPT, DOOR_INSPECTION_PROMPT, VISUAL_SCHEMA_CORRECTION_PROMPT, parseVisualDetections } from "./vlm-output.ts";
 import { createClient,memoryJournal } from "../../../third_party/agnes-harness/packages/sdk/src/index.node.ts";
 const root="/data-ssd/zhongchengkai/agnes";
 let client:any;
 let stage="CONNECT";
+let inferenceContext:any={};
+async function recordFailure(request:any){
+  const text=String(inferenceContext.text??""),trimmed=text.trim(),at=new Date().toISOString();
+  const directory=root+"/artifacts/perception-failures";
+  const record={at,stage,session_id:inferenceContext.session_id??null,request_id:String(request.id),
+    method:request.method,repair_invalid_schema:request.repair_invalid_schema===true,
+    frame_sha256:createHash("sha256").update(Buffer.from(request.png??"","base64")).digest("hex"),
+    assistant_output_length:text.length,assistant_output_sha256:createHash("sha256").update(text).digest("hex"),
+    assistant_text:trimmed==="{}"?text:(trimmed===""?"":"WITHHELD_NON_EMPTY_OUTPUT_SEE_NATIVE_SESSION"),
+    native_turn:inferenceContext.turn??null,tool_calls:inferenceContext.toolCalls??0};
+  try{await mkdir(directory,{recursive:true});await appendFile(directory+"/"+at.slice(0,10)+".jsonl",JSON.stringify(record)+"\n");}
+  catch{console.error("PERCEPTION_FAILURE_AUDIT_WRITE_FAILED");}
+}
 function textOf(d:any):string {
   return typeof d==="string"?d:d?.text??(Array.isArray(d?.content)?d.content.map(textOf).join(""):Array.isArray(d)?d.map(textOf).join(""):"");
-}
-function jsonObjects(text:string):any[] {
-  const results:any[]=[];let start=-1,depth=0,quoted=false,escaped=false;
-  for(let i=0;i<text.length;i++){
-    const c=text[i];
-    if(quoted){if(escaped)escaped=false;else if(c==="\\")escaped=true;else if(c==='"')quoted=false;continue;}
-    if(c==='"'&&depth){quoted=true;continue;}
-    if(c==="{"){if(!depth)start=i;depth++;}
-    if(c==="}"&&depth&&!--depth){try{results.push(JSON.parse(text.slice(start,i+1)));}catch{}}
-  }
-  return results;
 }
 async function connect(){
   if(client)return client;
@@ -29,36 +34,47 @@ async function connect(){
   return client;
 }
 async function detect(request:any){
+  stage="CONNECT";inferenceContext={};
   const c=await connect();
-  if(request.method==="audit")return {provider:"agnes-ai",model:"agnes-3.0-flash",configured:true,image_catalog_support:true};
+  if(request.method==="audit")return {provider:"agnes-ai",model:"agnes-3.0-flash",configured:true,image_catalog_support:true,required_preset:"sensor-image"};
   stage="SESSION_NEW";
-  const session=await c.session.new({cwd:root,sessionKey:`phase10-image-${Date.now()}`});
+  const session=await c.session.new({cwd:root,preset:"sensor-image",sessionKey:`phase10-image-${Date.now()}`});
+  inferenceContext.session_id=session.id;
   await session.attach();
   const remove=session.onPermissionRequest(async(r:any)=>({optionId:r.options.find((o:any)=>o.kind==="reject_once").optionId}));
   const iterator=session.events()[Symbol.asyncIterator]();
   let text="";
   let toolCalls=0;
   const reading=(async()=>{for(;;){const item=await iterator.next();if(item.done)break;
-    if(item.value.type==="tool/call") {toolCalls++;void session.cancel().catch(()=>undefined);}
+    if(item.value.type==="tool/call") {toolCalls++;inferenceContext.toolCalls=toolCalls;void session.cancel().catch(()=>undefined);}
     if(item.value.type==="assistant/message"){
       const d=item.value.data;
-      text+=textOf(d);
+      text+=textOf(d);inferenceContext.text=text;
     }
   }})();
   try{
     stage="IMAGE_PROMPT";
-    await session.prompt([{type:"text",text:"Image-only visual inspection. Do not call tools, do not use any task/world/session knowledge. Identify ONLY visibly supported demo objects: person, fire_extinguisher, toolbox, hazard_marker. Empty list if absent. Return ONLY JSON {\"detections\":[{\"label\":\"person\",\"confidence\":0.0,\"bbox\":[x1,y1,x2,y2]}]}. Bbox coordinates normalized 0..1. Confidence must reflect visual uncertainty; do not force high confidence. A red object alone is NOT proof of an extinguisher. Person means visible human-shaped figure, not confirmed researcher identity."},
-      {type:"image",data:request.png,mimeType:"image/png"}],{signal:AbortSignal.timeout(45000)});
+    const prompt=(request.method==="detect_door"?DOOR_INSPECTION_PROMPT:VISUAL_INSPECTION_PROMPT)
+      +(request.repair_invalid_schema===true?VISUAL_SCHEMA_CORRECTION_PROMPT:"");
+    const timeout=Number.isFinite(request.timeout_ms)?Math.max(1000,Math.min(45000,Math.floor(request.timeout_ms))):45000;
+    const signal=AbortSignal.timeout(timeout);
+    try {
+      inferenceContext.turn=await session.prompt([{type:"text",text:prompt},
+        {type:"image",data:request.png,mimeType:"image/png"}],{signal});
+    } catch (error) {
+      if(signal.aborted)stage="INFERENCE_TIMEOUT";
+      throw error;
+    }
+    const failure=visualTurnFailure(inferenceContext.turn, signal.aborted);
+    if(failure){stage=failure;throw Error("VLM_"+failure);}
     stage="EVENT_READING";
     await iterator.return?.();await reading;
     if(toolCalls){stage="TOOL_CALL_FORBIDDEN";throw Error("VLM_TOOL_CALL_FORBIDDEN");}
-    stage=text?"JSON_PARSE":"EMPTY_ASSISTANT_OUTPUT";
-    const output=jsonObjects(text).findLast((o:any)=>Array.isArray(o.detections));
-    if(!output){stage="NO_VALID_DETECTIONS_JSON";throw Error("VLM_INVALID_OUTPUT");}
-    if(!Array.isArray(output.detections))throw Error("VLM_INVALID_OUTPUT");
-    const detections=output.detections.filter((d:any)=>["person","fire_extinguisher","toolbox","hazard_marker"].includes(d.label)
-      &&Number.isFinite(d.confidence)&&d.confidence>=0&&d.confidence<=1&&Array.isArray(d.bbox)&&d.bbox.length===4
-      &&d.bbox.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=1)&&d.bbox[0]<d.bbox[2]&&d.bbox[1]<d.bbox[3]);
+    if(!text.trim()){stage="EMPTY_ASSISTANT_OUTPUT";throw Error("VLM_EMPTY_OUTPUT");}
+    stage="JSON_PARSE";
+    let detections: any[];
+    try { detections = parseVisualDetections(text); }
+    catch { stage="NO_VALID_DETECTIONS_JSON"; throw Error("VLM_INVALID_OUTPUT"); }
     return {provider:"agnes-ai",model:"agnes-3.0-flash",detections,tool_calls:toolCalls};
   }finally{remove();await iterator.return?.();await reading;await session.detach?.();}
 }
@@ -66,6 +82,6 @@ try{
   for await(const line of createInterface({input:process.stdin})){
     const request=JSON.parse(line);
     try{const result=await detect(request);console.log(JSON.stringify({id:request.id,ok:true,result}));}
-    catch{console.log(JSON.stringify({id:request.id,ok:false,error:{code:"VLM_UNAVAILABLE_OR_INVALID_OUTPUT",stage}}));}
+    catch{await recordFailure(request);console.log(JSON.stringify({id:request.id,ok:false,error:{code:"VLM_UNAVAILABLE_OR_INVALID_OUTPUT",stage}}));}
   }
 }finally{await client?.close();}

@@ -192,6 +192,12 @@ describe('preset view', () => {
   })
 })
 
+it('reads explicit image-only tool disclosure without changing the default', () => {
+  expect(readPreset({ disclosure: 'none', model: { prompt_sections: [] } }, 'sensor-image').disclosure).toBe('none')
+  expect(readPreset({ disclosure: 'none', model: { prompt_sections: [] } }, 'sensor-image').model.promptSections).toEqual([])
+  expect(presetDefaults().disclosure).toBe('standard')
+})
+
 describe('seam names', () => {
   it('lists every seam name, and every seam the kernel fits is one of them', () => {
     // No literal count here. A hard-coded length is the wrong tripwire for an eleventh seam: an

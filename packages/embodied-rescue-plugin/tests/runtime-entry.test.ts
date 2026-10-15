@@ -7,11 +7,14 @@ import {
 
 const captureTools = () => {
   const tools: Array<Record<string, any>> = [];
+  const hooks:any[]=[];
   embodiedRescuePlugin.apply({
     extension: () => ({
       registerTool: (tool: Record<string, any>) => tools.push(tool),
+      registerHook: (name:string,handler:any)=>hooks.push({name,handler}),
     }),
   });
+  Object.assign(tools,{hooks});
   return tools;
 };
 
@@ -91,6 +94,7 @@ test("runtime mission_reset rejects a completed mission without changing state",
   const stateTool = tools.find((tool) => tool.name === "mission_get_state");
   const resetTool = tools.find((tool) => tool.name === "mission_reset");
 
+  await (tools as any).hooks[0].handler({name:'mcp_robot_mcp_hash_get_observation',result:{structured:{status:'SUCCEEDED',detections:[{id:'observed',label:'person',confidence:.95,source:'ros2_camera_perception',evidence:{method:'vlm',provider:'agnes-ai',frame_sha256:'a'.repeat(64),frame_timestamp:{sec:1}}}]}}});
   await updateTool.execute({ target_status: "FOUND", replan: true, active_perception: true });
   const before = await stateTool.execute({});
   const rejected = await resetTool.execute({});
@@ -99,4 +103,21 @@ test("runtime mission_reset rejects a completed mission without changing state",
   assert.equal(rejected.structured.ok, false);
   assert.equal(rejected.structured.code, "MISSION_ALREADY_COMPLETE");
   assert.deepEqual(after.structured, before.structured);
+});
+
+test("runtime target completion requires actual confident sensor evidence, not a model-written claim",async()=>{
+ const tools=captureTools(),update=tools.find(t=>t.name==='world_memory_update'),state=tools.find(t=>t.name==='mission_get_state');
+ const hook=(tools as any).hooks[0].handler;
+ const person=(confidence:number)=>({id:'visual-test',label:'person',confidence,source:'ros2_camera_perception',evidence:{method:'vlm',provider:'agnes-ai',frame_sha256:'a'.repeat(64),frame_timestamp:{sec:1}}});
+ for(const raw of [{status:'SUCCEEDED',still_uncertain:true,detections:[person(.42)]},{status:'SUCCEEDED',detections:[person(.35)]}]){
+  await hook({name:'mcp_robot_mcp_hash_inspect_object',result:{structured:raw}});
+  const rejected=await update.execute({target_status:'found',active_perception:true,last_observation:'confirmed'});
+  assert.equal(rejected.structured.code,'TARGET_NOT_CONFIRMED');assert.equal(rejected.isError,true);
+  assert.equal((await state.execute({})).structured.status,'IDLE');
+ }
+ await hook({name:'world_memory_update',result:{structured:{status:'SUCCEEDED',detections:[person(.99)]}}});
+ assert.equal((await update.execute({target_status:'found'})).structured.code,'TARGET_NOT_CONFIRMED');
+ await hook({name:'mcp_envdoor_hash_open_door',result:{structured:{status:'SUCCEEDED',verification:{fresh_camera_observation:{status:'SUCCEEDED',detections:[person(.95)]}}}}});
+ assert.equal((await update.execute({target_status:'found'})).isError,undefined);
+ assert.equal((await state.execute({})).structured.status,'COMPLETED');
 });

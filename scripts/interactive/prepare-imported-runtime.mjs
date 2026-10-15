@@ -118,7 +118,7 @@ if (layout === 'lotus') {
       z: 0.0
       yaw: ${Number(skeleton.start_poses?.[0]?.yaw || 0).toFixed(8)}
     robot_model_type: nav2_amcl::DifferentialMotionModel
-    laser_model_type: likelihood_field
+    laser_model_type: likelihood_field_prob
     laser_max_range: 12.0
     laser_min_range: 0.1
     laser_likelihood_max_dist: 2.0

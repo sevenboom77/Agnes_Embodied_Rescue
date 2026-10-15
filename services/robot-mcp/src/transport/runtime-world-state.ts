@@ -1,3 +1,4 @@
+import { nav2TerminalDetails } from "./navigation-result.ts";
 /** Per-gateway runtime memory. Only real bridge results can confirm navigation. */
 export class RuntimeWorldState {
   private visited=new Set<string>();
@@ -58,6 +59,8 @@ export class RuntimeWorldState {
     if(!attempt || attempt.status!=="PENDING") throw new Error("INVALID_NAVIGATION_EVENT");
     Object.assign(attempt,{status:result.status,accepted:result.accepted??false,
       reason:result.reason??null,code:result.code??null,action_status:result.action_status??null,
+      error_code:result.error_code??result.result?.error_code??null,
+      error_msg:result.error_msg??result.result?.error_msg??null,
       operation_id:result.operation_id??null,goal_id:result.goal_id??null,
       terminal_known:result.terminal_known??false,owner_status:result.owner_status??null,
       timeout_source:result.timeout_source??null});
@@ -96,8 +99,8 @@ export class RuntimeWorldState {
       status: terminal === "SUCCEEDED" ? "SUCCEEDED" : "FAILED",
       accepted: true, action_status: terminal, terminal_known: true,
       operation_id: operationId, goal_id: operation?.goal_id ?? null,
-      error_code: operation?.error_code ?? null,
-      reason: terminal === "CANCELED" ? "ROBOT_STOPPED" : terminal === "ABORTED" ? "NAVIGATION_SYSTEM_UNHEALTHY" : null,
+      ...nav2TerminalDetails(terminal, operation?.error_code,
+        operation?.error_msg ?? operation?.error_message, operation?.reason),
     };
     Object.assign(attempt, result);
     if (result.status === "SUCCEEDED") this.visited.add(attempt.target);

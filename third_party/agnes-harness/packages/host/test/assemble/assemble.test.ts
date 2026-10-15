@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { ScriptedProvider } from '@agnes/ai/testkit'
 import type { Context } from '@agnes/cordis'
 import type { RemoteTransport, SandboxSeam, SeamWorkspace } from '@agnes/core'
@@ -1280,6 +1281,61 @@ describe('assemble', () => {
     })
     expect(order).toEqual([])
   })
+
+  it.each([false, true])(
+    'loads a real snapshot image preset only when profile.packages selects its module (selected=%s)',
+    async (selected) => {
+      const vendor = '@acme/image-preset'
+      const snapshotDir = mkdtempSync(join(tmpdir(), 'agnes-runtime-image-preset-'))
+      dirs.push(snapshotDir)
+      writeFileSync(join(snapshotDir, 'package.json'), JSON.stringify({
+        name: vendor, version: '1.0.0', type: 'module', exports: './index.mjs',
+        agnes: { plugins: [{ export: 'ordinary', id: 'ext:acme/image-preset' }] },
+      }))
+      writeFileSync(join(snapshotDir, 'index.mjs'), [
+        'export const counters = { mounts: 0 }',
+        'export const ordinary = { apply() { counters.mounts++ } }',
+        'export const presets = { "sensor-image": { name: "sensor-image", extends: "standard", disclosure: "none", model: { prompt_sections: [] } } }',
+      ].join('\n'))
+      const integrity = await hashDirectory(snapshotDir)
+      const snapshot: RuntimeSnapshot = Object.freeze({
+        snapshotId: integrity, profile: 'local-dev', packageId: vendor, version: '1.0.0',
+        integrity, treeIntegrity: integrity, capabilityHash: '0'.repeat(64),
+        directory: snapshotDir, contributions: Object.freeze([]),
+      })
+      const profile = await resolveProfile({
+        builtin: 'local-dev',
+        lock: { packages: { ...lockPkgs, [vendor]: {
+          version: '1.0.0', integrity, trust: 'trusted', enabled: true,
+        } } },
+        user: {
+          name: 'local-dev',
+          provider: { package: '@agnes/ai', adapters: ['@agnes/ai'], routes: [ROUTE] },
+          presets: { default: 'standard', allowed: ['standard', 'sensor-image'] },
+          ...(selected ? { packages: [{ id: vendor, source: 'test', enabled: true }] } : {}),
+        },
+      }, env)
+      // No preconstructed namespace/preset injection: packageEntry and native
+      // import load the actual immutable snapshot export through loadRuntimePackage.
+      const d = deps(allModules(), {
+        runtimePluginSnapshots: [{ snapshot, generation: 1, trusted: true }],
+        extensionLoader: { import: async file => await import(pathToFileURL(file).href) },
+      })
+      if (!selected) {
+        await expect(assemble(profile, d)).rejects.toMatchObject({
+          code: 'E_PRESET_UNSUPPORTED', detail: { source: 'sensor-image' },
+        })
+        return
+      }
+      const a = await assemble(profile, d)
+      try {
+        expect(a.presets['sensor-image']).toMatchObject({ disclosure: 'none' })
+        expect(a.pluginTree.currentRows().filter(row => row.id === 'ext:acme/image-preset')).toHaveLength(1)
+        const namespace = await import(pathToFileURL(join(snapshotDir, 'index.mjs')).href)
+        expect(namespace.counters.mounts).toBe(1)
+      } finally { await a.rollback.unwind() }
+    },
+  )
 
   it('assembles a kernel with ten seams, provider, presets and the resolved default preset', async () => {
     const p = await profileFor()

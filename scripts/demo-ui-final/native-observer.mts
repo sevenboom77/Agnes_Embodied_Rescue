@@ -34,6 +34,16 @@ async function detail(n:any){
  }while(true);
  const value=JSON.parse(Buffer.concat(parts).toString('utf8'));cache.set(key,value);save('native-sessions/'+encodeURIComponent(sessionId)+'/tool-'+n.seq+'-'+(n.resultSeq||'pending')+'.json',{session_id:sessionId,call_seq:n.seq,result_seq:n.resultSeq,detail:value});return value;
 }
+function evaluationMap() {
+  try {
+    const active=read('active-map.json');
+    if (!active?.registry?.startsWith(ROOT+'/')) return undefined;
+    const locations=JSON.parse(fs.readFileSync(active.registry,'utf8')).locations;
+    const registryPath=active.registry.slice(0,active.registry.lastIndexOf('/'))+'/interaction-registry.json';
+    const doors=JSON.parse(fs.readFileSync(registryPath,'utf8')).doors;
+    return {locations,doors};
+  } catch { return undefined; }
+}
 function spanTimes(span:any,lookup:any={}){if(!span)return lookup;if(span.toolUseId)lookup[span.toolUseId]=span;for(const child of span.children||[])spanTimes(child,lookup);return lookup;}
 while(true){
  try{
@@ -55,7 +65,7 @@ while(true){
   const report=nodes.filter((n:any)=>n.kind==='assistant'&&n.text).at(-1)?.text||'',task=text(user);
   let outcome:any=null,status=turn?(['running','waiting'].includes(turn.status)?'RUNNING':turn.status==='cancelled'?'CANCELED':turn.status==='failed'?'FAILED':'COMPLETED'):'IDLE';
   if(turn&&!['running','waiting'].includes(turn.status)){
-   outcome=evaluateMission(task,events,report,turn.status==='completed'?null:{code:turn.reason||turn.status,...turn.error},turn.status==='cancelled',undefined);
+   outcome=evaluateMission(task,events,report,turn.status==='completed'?null:{code:turn.reason||turn.status,...turn.error},turn.status==='cancelled',undefined,null,evaluationMap());
    if(/get_robot_state|机器人.*(哪里|位置|状态)|where.*robot|当前.*位置/i.test(task)&&!events.some((e:any)=>e.type==='tool_result'&&/get_robot_state$/.test(e.tool)&&Number.isFinite(e.result?.pose?.x)))outcome={...outcome,status:'FAILED',reasons:[...(outcome.reasons||[]),'READONLY_ROBOT_STATE_NOT_OBSERVED'],decision:{status:'FAILED',reasons:['READONLY_ROBOT_STATE_NOT_OBSERVED']}};
    status=outcome.status;
   }

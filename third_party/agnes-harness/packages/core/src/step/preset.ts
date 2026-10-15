@@ -7,7 +7,7 @@ import type { ThinkingLevel } from '@agnes/protocol'
  */
 export type PresetView = {
   name: string
-  disclosure: 'standard' | 'hybrid' | 'code'
+  disclosure: 'standard' | 'hybrid' | 'code' | 'none'
   model: {
     /** Omitted retains package defaults; an explicit empty list disables package prompt sections. */
     promptSections?: readonly string[]

@@ -1049,7 +1049,7 @@ describe('extension event ledger entry', () => {
   })
 })
 
-it.each(['standard', 'code'] as const)(
+it.each(['standard', 'code', 'none'] as const)(
   'refuses registered undisclosed model calls before execution in %s',
   async (mode) => {
     let executed = 0,
@@ -1071,7 +1071,7 @@ it.each(['standard', 'code'] as const)(
     const provider = fakeProvider([toolTurn('read', { path: '/w/a' })])
     const k = base({
       provider,
-      ...(mode === 'code' ? { preset: { ...presetDefaults(), disclosure: 'code' as const } } : {}),
+      ...(mode !== 'standard' ? { preset: { ...presetDefaults(), disclosure: mode } } : {}),
       hooks: {
         ...noopHooks,
         async toolCall() {
@@ -1162,7 +1162,7 @@ it('keeps refused calls settled across actual Kernel reopen and preserves mixed-
   }
 })
 
-it.each(['standard', 'hybrid', 'code'] as const)(
+it.each(['standard', 'hybrid', 'code', 'none'] as const)(
   'keeps %s disclosure consistent despite broader Operation contributions',
   async (mode) => {
     const provider = fakeProvider([textTurn('ok')])
@@ -1191,7 +1191,7 @@ it.each(['standard', 'hybrid', 'code'] as const)(
       await s.acceptInput()
       await s.runInference()
       const expected =
-        mode === 'code' ? ['run_code'] : mode === 'hybrid' ? ['read', 'run_code', 'shell'] : ['read', 'shell']
+        mode === 'none' ? [] : mode === 'code' ? ['run_code'] : mode === 'hybrid' ? ['read', 'run_code', 'shell'] : ['read', 'shell']
       expect(provider.requests[0]?.tools.map((t) => t.name).sort()).toEqual(expected)
     } finally {
       await k.close()

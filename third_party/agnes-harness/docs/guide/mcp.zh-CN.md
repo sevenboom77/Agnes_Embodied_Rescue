@@ -71,3 +71,5 @@ session worker 启动及资源变化后的轮次边界调用 `createMcpRowRuntim
 逐服务器运行器的源码与测试可在下方查阅。实际运行版本及外部服务验证范围见[验证记录](../maintainers/verification.zh-CN.md)。
 
 源码入口：[管理命令](../../packages/resource-control-cli/src/resources.ts)、[Schema](../../packages/protocol/schema/resource-control.json)、[资源启动](../../packages/resource-control-worker/src/runtime-bootstrap.ts)、[Worker 启动](../../packages/worker-runtime/src/main.ts)、[轮次重载](../../packages/worker-runtime/src/commands.ts)、[逐服务器运行器](../../packages/worker-runtime/src/mcp-row-runtime.ts)与[派生](../../packages/worker-runtime/src/mcp-server-rows.ts)。校验位置记录在[源码锚点清单](../../tools/public-docs/source-checks.json)。
+
+托管 MCP 工具图像沿用模型请求的 profile 图像数量、字节及像素限额。嵌入式运行时须经 `createMcpRowRuntime` 传入 `mediaLimits`；省略该策略时图像仍禁用。图像仍先经校验、持久化，再进入模型请求选择。

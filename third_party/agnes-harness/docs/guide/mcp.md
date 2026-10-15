@@ -81,3 +81,5 @@ Changing a definition changes the row's revision, while unchanged servers can re
 The runner's source and tests are linked below. Check [verification](../maintainers/verification.md) for the actual runtime version and external-service coverage.
 
 Source: [management commands](../../packages/resource-control-cli/src/resources.ts), [schema](../../packages/protocol/schema/resource-control.json), [resource bootstrap](../../packages/resource-control-worker/src/runtime-bootstrap.ts), [worker startup](../../packages/worker-runtime/src/main.ts), [turn reload](../../packages/worker-runtime/src/commands.ts), [per-server runner](../../packages/worker-runtime/src/mcp-row-runtime.ts), and [row derivation](../../packages/worker-runtime/src/mcp-server-rows.ts). Verified anchors are recorded in the [source-check manifest](../../tools/public-docs/source-checks.json).
+
+Managed MCP tool images use the same explicit profile image count, byte and pixel budgets as model requests. Embedded runtimes must pass `mediaLimits` through `createMcpRowRuntime`; omitting the policy keeps images disabled. Image validation and artifact persistence still run before provider request selection.

@@ -6,9 +6,11 @@ from datetime import datetime,timezone
 from scene_observers import restart_observers
 R=Path('/data-ssd/zhongchengkai/agnes'); O=R/'artifacts/demo-ui-final'
 assert Path.cwd().resolve()==R
+sys.path.insert(0,str(R))
+from simulation.final_rescue.object_spawn import validate_spawn_evidence
 map_id,job=sys.argv[1:3]
 import re
-assert re.fullmatch(r'(classic|lotus|map-[a-f0-9-]{36})',map_id)
+assert re.fullmatch(r'(classic|lotus|office-fire|map-[a-f0-9-]{36})',map_id)
 assert re.fullmatch(r'[a-f0-9-]{36}',job)
 D=O/'scene-switch/jobs'/job;D.mkdir(parents=True,exist_ok=True)
 NODE=str(R/'tools/node/bin/node'); START=time.time()
@@ -23,7 +25,10 @@ def run(args,name,timeout=90):
  log=D/(name+'.log')
  if log.exists():log=D/(name+'-'+str(time.time_ns())+'.log')
  log.write_text(result.stdout+'\n'+result.stderr)
- if result.returncode:raise RuntimeError(name+'_FAILED:'+result.stderr[-700:]+result.stdout[-700:])
+ if result.returncode:
+  message=next((line.partition('Error: ')[2] for line in result.stderr.splitlines() if line.startswith('Error: ')),None)
+  if not message:message=(result.stderr.strip() or result.stdout.strip())[-500:]
+  raise RuntimeError(name+'_FAILED:'+message)
  return result.stdout
 def sdk(mode):return run([NODE,'--import','./third_party/agnes-harness/node_modules/tsx/dist/loader.mjs','scripts/demo-ui-final/scene-resources.mts',mode,job],'sdk-'+mode,180)
 def fresh_guard(held=False,native=True):
@@ -57,6 +62,13 @@ def stop():
 def zero_velocity():
  # Only this domain/project, while the scene transaction owns the motion lease.
  run(['bash','-lc','source scripts/final-rescue/env.sh; tools/pixi/bin/pixi run --locked --manifest-path runtime/ros2-jazzy/pixi.toml ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"'],'zero-cmd-vel',25)
+def snapshot_stack_diagnostics(label):
+ dest=D/(label+'-diagnostics');dest.mkdir(exist_ok=True)
+ for name in ['gz-server','ros-gz-bridge','odom-tf','nav2','dynamic-scenario']:
+  src=R/'logs/final_rescue'/(name+'.log')
+  if src.is_file():shutil.copy2(src,dest/src.name)
+ save(dest/'recorded-at.json',{'recorded_at':time.time(),'job_id':job,'label':label})
+
 def launch(label):
  started=time.time()
  log=(D/(label+'.log')).open('ab')
@@ -65,16 +77,22 @@ def launch(label):
  log.close();save(D/(label+'-launcher.json'),{'pid':proc.pid,'launched_at':time.time()})
  deadline=time.time()+180
  while time.time()<deadline:
-  if proc.poll() is not None:raise RuntimeError(label+'_EXITED')
+  if proc.poll() is not None:
+   snapshot_stack_diagnostics(label)
+   failure=(D/(label+'.log')).read_text(errors='replace')
+   reason=next((line.partition('PHASE9D_STACK_OPERATION_FAILED: ')[2] for line in reversed(failure.splitlines()) if line.startswith('PHASE9D_STACK_OPERATION_FAILED: ')),'')
+   raise RuntimeError(label+'_EXITED'+(':'+reason if reason else ''))
   text=(D/(label+'.log')).read_text(errors='replace')
   if 'FINAL_RESCUE_STACK_READY ' in text:
    payload=json.loads(next(line.split('FINAL_RESCUE_STACK_READY ',1)[1] for line in text.splitlines() if 'FINAL_RESCUE_STACK_READY ' in line))
    assert payload.get('ready'),'STACK_NOT_READY'
    save(D/(label+'-readiness.json'),payload)
+   snapshot_stack_diagnostics(label)
    entries=verify_owned();nav=next(e for e in entries if e['name']=='nav2')
    save(O/'scene-generation.json',{'ready':True,'started_at':started,'verified_at':time.time(),'nav_pid':nav['pid'],'nav_start_time':nav['start_time'],'job_id':job,'source':'fresh owned Nav2 process + check_stack real lifecycle/TF/clock; no commands issued'})
    return
   time.sleep(.5)
+ snapshot_stack_diagnostics(label)
  raise RuntimeError(label+'_READY_TIMEOUT')
 pointers=['artifacts/interactive-live/current-scenario.env','artifacts/interactive-live/current-scenario.json','artifacts/interactive-live/scenario-controller/current-private.json','artifacts/interactive-live/imported-map.env','artifacts/interactive-live/active-import.json','runtime/interactive-mission-origin.json','artifacts/demo-ui-final/active-map.json','artifacts/demo-ui-final/native-session-target.json','artifacts/demo-ui-final/scene-generation.json']
 manifest=[];fd=None;disabled=False;stop_attempted=False;committed=False
@@ -116,12 +134,12 @@ try:
   reg=read(plan['registry']);start=next(x['pose'] for x in reg['locations'] if x['id']=='Start')
   robot_ok=r.get('pose') and ((r['pose']['x']-start['x'])**2+(r['pose']['y']-start['y'])**2)**.5<.6
   yaw_ok=bool(r.get('pose')) and abs(__import__('math').atan2(__import__('math').sin(r['pose']['yaw']-start.get('yaw',0)),__import__('math').cos(r['pose']['yaw']-start.get('yaw',0))))<.15
-  objects_ok=objects.get('seed')==plan['seed'] and len(objects.get('objects_spawned',[]))==4 and all(x['returncode']==0 and 'data: true' in x['gazebo_response'] for x in objects['objects_spawned'])
+  objects_ok=validate_spawn_evidence(objects,spec,plan['world_name'],observed_after=launched)
   expected=read(D/'static-validation-private.json')['check']['static']['map']
   m=r.get('map') or {}
   map_ok=m.get('received_at',0)>launched and m.get('width')==expected['width'] and m.get('height')==expected['height'] and abs(m.get('resolution',0)-expected['resolution'])<1e-5 and abs(m.get('origin',{}).get('x',999)-expected['origin'][0])<1e-5 and abs(m.get('origin',{}).get('y',999)-expected['origin'][1])<1e-5
   save(D/'last-live-check.json',{'ros':r,'camera':cam,'objects':objects,'map_ok':map_ok,'robot_ok':robot_ok,'yaw_ok':yaw_ok,'objects_ok':objects_ok})
-  if time.time()-r['updated_at']<3 and r.get('pose_age_ms',99999) is not None and r['pose_age_ms']<2500 and robot_ok and yaw_ok and map_ok and cam.get('real_sensor') and cam.get('pose',{}).get('position') and ((cam['pose']['position']['x']-start['x'])**2+(cam['pose']['position']['y']-start['y'])**2)**.5<.6 and ca>launched and 0<=time.time()-ca<2.5 and objects_ok:
+  if time.time()-r['updated_at']<3 and r.get('pose_age_ms',99999) is not None and r['pose_age_ms']<2500 and robot_ok and yaw_ok and map_ok and cam.get('real_sensor') and (cam.get('pose') or {}).get('position') and ((cam['pose']['position']['x']-start['x'])**2+(cam['pose']['position']['y']-start['y'])**2)**.5<.6 and ca>launched and 0<=time.time()-ca<2.5 and objects_ok:
    proof={'ros':r,'camera':cam,'objects':objects,'new_map_received':True,'spawn_distance_ok':True,'navigation_commands_issued':0};break
   time.sleep(.4)
  if not proof:raise RuntimeError('LIVE_NEW_WORLD_VERIFICATION_FAILED:'+json.dumps({'map_ok':map_ok,'robot_ok':robot_ok,'yaw_ok':yaw_ok,'objects_ok':objects_ok}))

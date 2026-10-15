@@ -3,6 +3,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createMapCatalog} from '../../demo/final-dashboard/map-catalog.mjs';
 import {scenarioForSeed,writeScenario} from '../interactive/scenario-manager.mjs';
+import {withOfficeLocalization} from '../interactive/office-localization.mjs';
 import {validateScenario} from '../interactive/solvability-gate.mjs';
 const ROOT='/data-ssd/zhongchengkai/agnes',NODE=ROOT+'/tools/node/bin/node';
 const [mode,id,job]=process.argv.slice(2);
@@ -15,7 +16,8 @@ const entry=createMapCatalog().detail(id);
 let layout;
 if(id==='classic')layout={...scenarioForSeed(1185).layout,id:'layout_c'};
 else{
- const src=id==='lotus'?ROOT+'/maps/imported/lotus_demo/lotus_skeleton.json':ROOT+'/artifacts/import-skeleton-showcase/uploads/'+entry.upload_id+'.json';
+ const builtinSources={lotus:'maps/imported/lotus_demo/lotus_skeleton.json','office-fire':'maps/imported/office_fire/office_skeleton.json'};
+ const src=builtinSources[id]?ROOT+'/'+builtinSources[id]:ROOT+'/artifacts/import-skeleton-showcase/uploads/'+entry.upload_id+'.json';
  const source=JSON.parse(fs.readFileSync(src,'utf8'));
  const finite=v=>typeof v==='number'&&Number.isFinite(v);
  if(!source.boundary||!['min_x','max_x','min_y','max_y'].every(k=>finite(source.boundary[k])&&Math.abs(source.boundary[k])<=45))throw Error('PHYSICAL_MAP_MUST_FIT_PROJECT_100M_GROUND');
@@ -35,11 +37,12 @@ else{
  source.metadata={...source.metadata,id:'agnes_map_'+job.replaceAll('-','')};
  save('source.json',source);
  const compiled=out+'/compiled';execFileSync('python3',[ROOT+'/scripts/map-import/map_import.py','compile',out+'/source.json','--out',compiled],{cwd:ROOT,timeout:30000});
- // Reuse reviewed classic navigation settings verbatim; only map file path changes.
+ // Reuse reviewed controller/costmap settings; office adds real laser localization.
  const reviewed=ROOT+'/simulation/scenarios/layout_c/nav2_params.yaml';
  const params=fs.readFileSync(reviewed,'utf8');if(!params.includes(ROOT+'/simulation/scenarios/layout_c/map.yaml'))throw Error('REVIEWED_MAP_PATH_NOT_FOUND');
- fs.writeFileSync(compiled+'/nav2_params.yaml',params.replaceAll(ROOT+'/simulation/scenarios/layout_c/map.yaml',compiled+'/map.yaml'));
- layout={id:source.metadata.id,label:entry.name,world:compiled+'/world.sdf',map:compiled+'/map.yaml',nav2:compiled+'/nav2_params.yaml',bridge:compiled+'/bridge.yaml',registry:compiled+'/world_registry.json',alternate_route:true,imported:true};
+ const mapParams=params.replaceAll(ROOT+'/simulation/scenarios/layout_c/map.yaml',compiled+'/map.yaml');
+ fs.writeFileSync(compiled+'/nav2_params.yaml',id==='office-fire'?withOfficeLocalization(mapParams,source.start_poses[0]):mapParams);
+ layout={id:source.metadata.id,label:entry.name,world:compiled+'/world.sdf',map:compiled+'/map.yaml',nav2:compiled+'/nav2_params.yaml',bridge:compiled+'/bridge.yaml',registry:compiled+'/world_registry.json',alternate_route:true,imported:true,...(id==='office-fire'?{localization:'amcl'}:{})};
 }
 execFileSync(NODE,['--import','./third_party/agnes-harness/node_modules/tsx/dist/loader.mjs','scripts/demo-ui-final/validate-registry.mts',layout.registry.startsWith('/')?layout.registry:ROOT+'/'+layout.registry],{cwd:ROOT,timeout:15000});
 let spec,check;const attempts=[];
@@ -48,6 +51,7 @@ for(let n=0;n<8;n++){
  spec=scenarioForSeed(seed,{layout});check=validateScenario(spec,{runtime:false});attempts.push({seed,pass:check.pass,reasons:check.static?.failure_reasons});
  if(check.pass)break;
 }
+if(layout.localization==='amcl'&&spec.layout.localization!=='amcl')throw Error('SELECTED_MAP_LOCALIZATION_NOT_PRESERVED');
 const registry=JSON.parse(fs.readFileSync(layout.registry.startsWith('/')?layout.registry:ROOT+'/'+layout.registry,'utf8'));
 const rooms=new Map(registry.locations.filter(x=>x.type==='room').map(x=>[x.id,x]));
 const placements=[{...spec.person_pose_orientation,room:spec.person_target_room},...spec.object_placements];
@@ -55,5 +59,5 @@ const insideRoom=placements.every(x=>{const b=rooms.get(x.room)?.bounds;return b
 if(!insideRoom)throw Error('PLACEMENT_OUTSIDE_SELECTED_MAP_ROOM');
 save('static-validation-private.json',{check,attempts,placement_rooms_verified:insideRoom});if(!check?.pass)throw Error('NEW_MAP_STATIC_GATE_FAILED:'+JSON.stringify(attempts));
 save('plan-private.json',spec);
-save('plan-public.json',{map_id:id,map_name:entry.name,seed:spec.seed,layout_id:spec.layout_id,world:layout.world,map:layout.map,registry:layout.registry,nav2:layout.nav2,bridge:layout.bridge,world_name:layout.id,imported:Boolean(layout.imported),static_pass:check.pass,static_checks:check.static.checks,placement_algorithm:'existing ScenarioManager seeded PRNG + safeRoomPose, constrained to selected map rooms',dynamic_classic_events:layout.imported?'DISABLED_FIXED_OLD_COORDINATES':'UNCHANGED',activation:'NOT_YET_ACTIVATED'});
+save('plan-public.json',{map_id:id,map_name:entry.name,seed:spec.seed,layout_id:spec.layout_id,world:layout.world,map:layout.map,registry:layout.registry,nav2:layout.nav2,bridge:layout.bridge,world_name:layout.id,imported:Boolean(layout.imported),localization:layout.localization||'static',static_pass:check.pass,static_checks:check.static.checks,placement_algorithm:'existing ScenarioManager seeded PRNG + safeRoomPose, constrained to selected map rooms',dynamic_classic_events:layout.imported?'DISABLED_FIXED_OLD_COORDINATES':'UNCHANGED',activation:'NOT_YET_ACTIVATED'});
 console.log(JSON.stringify({pass:true,map_id:id,seed:spec.seed,job,layout_id:spec.layout_id}));

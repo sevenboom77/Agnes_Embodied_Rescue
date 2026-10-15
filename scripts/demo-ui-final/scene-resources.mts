@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {beginPackageProfileTransaction,restorePackageProfileTransaction} from './profile-package-transaction.mjs';
 import {createClient,memoryJournal} from '../../third_party/agnes-harness/packages/sdk/src/index.node.ts';
 const ROOT='/data-ssd/zhongchengkai/agnes',OUT=ROOT+'/artifacts/demo-ui-final',profile='local-dev';
 const [mode,job]=process.argv.slice(2);if(!/^[a-f0-9-]{36}$/.test(job||''))throw Error('INVALID_JOB');
@@ -12,7 +13,8 @@ const command=(n:string)=>'scene-'+job+'-'+n+'-'+Date.now();
 async function op(receipt:any,kind='resource'){
  for(let n=0;n<600;n++){
   const v=kind==='package'?await client.packages.operation.get({profile,operationId:receipt.operationId}):await client.resources.operation.get({profile,operationId:receipt.operationId});
-  if(['failed','cancelled','rolled-back'].includes(v.state))throw Error('RESOURCE_OPERATION_FAILED:'+JSON.stringify(v.lastSafeError||v.state));
+  save(dir+'/operation-'+kind+'-'+receipt.operationId+'.json',v);
+  if(['failed','cancelled','rolled-back'].includes(v.state))throw Error('RESOURCE_OPERATION_FAILED:'+JSON.stringify(v.error||v.lastSafeError||v.state));
   if(['succeeded','completed'].includes(v.state))return v;await wait(100);
  }throw Error('RESOURCE_OPERATION_TIMEOUT');
 }
@@ -40,9 +42,13 @@ try{
    const d=await client.mcp.servers.get({profile,serverId:row.serverId});
    await op(await client.mcp.servers.disable({...identity,serverId:row.serverId,expectedRevision:d.revision,commandId:command('disable-'+row.serverId)}));
   }
+  // AGH refuses package disable while profile.yaml still declares it. Withdraw only
+  // this already-trusted declaration, then use the official package lifecycle.
+  beginPackageProfileTransaction({profilePath:ROOT+'/.agh-home-step7/profiles/local-dev/profile.yaml',jobDir:dir,packageId:plugin.id});
   await op(await client.packages.disable({...identity,id:plugin.id,commandId:command('plugin-disable')}),'package');
  }
  else if(mode==='enable'){
+  try{
   const before=read(dir+'/resources-before.json'),rows=[];
   for(const row of before.servers){
    const d=await client.mcp.servers.get({profile,serverId:row.serverId});
@@ -56,10 +62,11 @@ try{
   }
   let plugin=(await client.packages.list({profile})).packages.find((x:any)=>x.id===before.plugin.id);
   if(plugin?.integrity!==before.plugin.integrity||!plugin?.trusted)throw Error('PLUGIN_IDENTITY_CHANGED');
-  if(plugin.desired!=='enabled')await op(await client.packages.enable({...identity,id:plugin.id,commandId:command('plugin-enable')}),'package');
-  plugin=(await client.packages.list({profile})).packages.find((x:any)=>x.id===before.plugin.id);
+  if(plugin.desired!=='enabled')await op(await client.packages.enable({...identity,id:plugin.id,expectedInstalledIntegrity:before.plugin.integrity,commandId:command('plugin-enable')}),'package');
+  for(let n=0;n<100;n++){plugin=(await client.packages.list({profile})).packages.find((x:any)=>x.id===before.plugin.id);if(plugin?.actual==='running')break;await wait(100);}
   if(plugin?.actual!=='running')throw Error('PLUGIN_NOT_RUNNING');
   save(dir+'/resources-after.json',{rows,plugin:{id:plugin.id,actual:plugin.actual,integrity:plugin.integrity}});
+  }finally{save(dir+'/profile-restoration.json',restorePackageProfileTransaction(dir));}
  }
  else if(mode==='session'){
   const plan=read(dir+'/plan-public.json'),s=await client.session.new({cwd:ROOT,preset:'standard',sessionKey:'demo-ui-native-'+Date.now()});

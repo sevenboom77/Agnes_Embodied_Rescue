@@ -30,7 +30,8 @@ function unwrapInspection(value: unknown, depth = 0): unknown {
 function compactMotion(value: unknown): unknown {
   if (!isRecord(value) || !Array.isArray(value.samples)) return value;
   const { samples, ...summary } = value;
-  const start = isRecord(value.start_pose) ? value.start_pose : null;
+  const origin = value.control_frame === "odom" ? value.start_odometry : value.start_pose;
+  const start = isRecord(origin) ? origin : null;
   let maxXYDeviation = 0;
   let maxAbsYawError = 0;
   for (const sample of samples) {
@@ -43,7 +44,7 @@ function compactMotion(value: unknown): unknown {
   }
   const point = (sample: unknown) => {
     if (!isRecord(sample)) return null;
-    return { at: sample.at, x: sample.x, y: sample.y, yaw: sample.yaw, yaw_error: sample.yaw_error };
+    return { at: sample.at, x: sample.x, y: sample.y, yaw: sample.yaw, yaw_error: sample.yaw_error, frame_id: sample.frame_id };
   };
   return {
     ...summary,
@@ -74,6 +75,8 @@ function compactDetection(value: unknown): unknown {
     view_bearing: value.view_bearing,
     evidence: {
       method: evidence.method,
+      provider: evidence.provider,
+      model: evidence.model,
       demo_marker: evidence.demo_marker,
       general_recognition: evidence.general_recognition,
       frame_timestamp: evidence.frame_timestamp,
@@ -85,12 +88,62 @@ function compactDetection(value: unknown): unknown {
   };
 }
 
+/** Preserve the current camera evidence; history is available in the raw MCP trace. */
+function compactWorldState(value: unknown): unknown {
+  const world = unwrapInspection(value);
+  if (!isRecord(world)) return value;
+  const originalBytes = Buffer.byteLength(JSON.stringify(world), "utf8");
+  if (originalBytes <= INSPECTION_AGENT_RESULT_BUDGET_BYTES) return world;
+  const robot = isRecord(world.robot) ? { ...world.robot } : world.robot;
+  if (isRecord(robot?.inspection)) {
+    const { result, ...operation } = robot.inspection;
+    robot.inspection = { ...operation, result_available: Boolean(result), poll_via: "get_robot_state" };
+  }
+  const observations = Array.isArray(world.semantic_objects) ? world.semantic_objects : [];
+  const compact: JsonRecord = {
+    source: world.source, current_location: world.current_location, robot,
+    current_observation: world.current_observation,
+    sensor_status: world.sensor_status, camera_status: world.camera_status,
+    lidar_obstacle_summary: world.lidar_obstacle_summary,
+    known_locations: world.known_locations,
+    visited_locations: world.visited_locations, inspected_regions: world.inspected_regions,
+    blocked_routes: world.blocked_routes, last_pose: world.last_pose,
+    last_observation_timestamp: world.last_observation_timestamp,
+    semantic_objects: observations.slice(-12).map(compactDetection),
+    historical_objects_total: observations.length,
+    history_summary_only: true,
+    history_note: "Current observation is complete. Cumulative history and complete scans remain in the raw MCP trace; poll get_robot_state for the inspection result.",
+    response_compacted: true, response_original_bytes: originalBytes,
+  };
+  // The map has its own list_known_locations tool and scan history has its
+  // own get_robot_state endpoint. Neither may crowd out the actual new frame.
+  if (Buffer.byteLength(JSON.stringify(compact), "utf8") > INSPECTION_AGENT_RESULT_BUDGET_BYTES) {
+    compact.known_locations = (world.known_locations ?? []).map((l:any) => ({ id:l.id, name:l.name, type:l.type, pose:l.pose }));
+    compact.semantic_objects = [];
+    compact.history_note += " Historical object bodies omitted for size; static topology via list_known_locations.";
+    delete compact.lidar_obstacle_summary;
+    delete compact.blocked_routes;
+  }
+  if (Buffer.byteLength(JSON.stringify(compact), "utf8") > 24 * 1024) {
+    // This pathological current frame is too large for safe native delivery.
+    // Fail closed rather than silently dropping a current person detection.
+    return { ok:false, status:"PARTIAL", code:"WORLD_OBSERVATION_EXCEEDS_DELIVERY_BUDGET",
+      current_location:world.current_location, current_observation_available:false,
+      frame_timestamp:world.current_observation?.timestamp,
+      frame_sha256:world.current_observation?.frame_sha256,
+      response_original_bytes:originalBytes,
+      message:"Current observation exceeds the native delivery budget; no truncated visual evidence is claimed." };
+  }
+  return compact;
+}
+
 /**
  * Keep inspect_room's complete result in the Robot MCP trace, while sending a
  * bounded, non-truncated equivalent to the Agent. Per-view detections repeat
  * the same observations already present in the top-level detections array.
  */
 export function compactRobotToolResult(toolName: string, value: unknown): unknown {
+  if (toolName === "get_world_state") return compactWorldState(value);
   if (toolName !== "inspect_room") return value;
   const normalized = unwrapInspection(value);
   if (!isRecord(normalized)) return value;
@@ -122,7 +175,7 @@ export function compactRobotToolResult(toolName: string, value: unknown): unknow
     compact.detections = (Array.isArray(compact.detections) ? compact.detections : []).map((item: any) => ({
       id: item?.id, label: item?.label, confidence: item?.confidence,
       source: item?.source, frame_id: item?.frame_id, timestamp: item?.timestamp,
-      evidence: { method: item?.evidence?.method, frame_timestamp: item?.evidence?.frame_timestamp,
+      evidence: { method: item?.evidence?.method, provider: item?.evidence?.provider, model: item?.evidence?.model, frame_timestamp: item?.evidence?.frame_timestamp,
         frame_sha256: item?.evidence?.frame_sha256 },
     }));
     encoded = JSON.stringify(compact);
@@ -154,14 +207,15 @@ export function compactRobotToolResult(toolName: string, value: unknown): unknow
   // observations if a pathological result still exceeds the tool budget.
   // Per-view motion remains summarized, never silently reported as omitted.
   compact.evidence = compact.evidence.map((view: any) => ({
-    yaw: view?.yaw, timestamp: view?.timestamp, navigation_status: view?.navigation_status,
+    yaw: view?.yaw, odom_yaw: view?.odom_yaw, timestamp: view?.timestamp, navigation_status: view?.navigation_status,
+    frame_sha256: view?.frame_sha256, perception_status: view?.perception_status,
     motion: view?.motion, detection_count: view?.detection_count ?? view?.detections?.length ?? 0,
     detection_ids: Array.isArray(view?.detection_ids) ? view.detection_ids.slice(0, 12) : [],
   }));
   compact.detections = selected.slice(0, 12).map((item: any) => ({
     id: item?.id, label: item?.label, confidence: item?.confidence,
     source: item?.source, frame_id: item?.frame_id, timestamp: item?.timestamp,
-    evidence: { method: item?.evidence?.method, frame_timestamp: item?.evidence?.frame_timestamp,
+    evidence: { method: item?.evidence?.method, provider: item?.evidence?.provider, model: item?.evidence?.model, frame_timestamp: item?.evidence?.frame_timestamp,
       frame_sha256: item?.evidence?.frame_sha256 },
   }));
   encoded = JSON.stringify(compact);
@@ -170,6 +224,10 @@ export function compactRobotToolResult(toolName: string, value: unknown): unknow
   return {
     status: normalized.status,
     room: normalized.room,
+    inspection_id: normalized.inspection_id,
+    rotation_complete: normalized.rotation_complete,
+    rotation_evidence: normalized.rotation_evidence,
+    return_motion: normalized.return_motion,
     inspected: normalized.inspected,
     ok: normalized.ok,
     code: normalized.code,
@@ -177,6 +235,10 @@ export function compactRobotToolResult(toolName: string, value: unknown): unknow
     reason: normalized.reason,
     message: typeof normalized.message === "string" ? normalized.message.slice(0, 500) : undefined,
     scan_views: normalized.scan_views,
+    captured_views: normalized.captured_views,
+    analyzed_views: normalized.analyzed_views,
+    phase: normalized.phase,
+    timing: normalized.timing,
     partial: normalized.partial,
     complete_visibility_claimed: normalized.complete_visibility_claimed,
     detections_summary_only: true,
@@ -184,7 +246,8 @@ export function compactRobotToolResult(toolName: string, value: unknown): unknow
     detection_label_counts: compact.detection_label_counts,
     detections: compact.detections.filter((item: any) => /person|researcher|人员|研究员/iu.test(String(item?.label ?? ""))),
     evidence: compact.evidence.map((view: any) => ({
-      yaw: view?.yaw, timestamp: view?.timestamp,
+      yaw: view?.yaw, odom_yaw: view?.odom_yaw, timestamp: view?.timestamp,
+      frame_sha256: view?.frame_sha256, perception_status: view?.perception_status,
       motion_status: view?.motion?.status,
       motion_sample_count: view?.motion?.sample_summary?.count ?? 0,
       motion_max_xy_deviation_m: view?.motion?.sample_summary?.max_xy_deviation_from_start_m ?? null,

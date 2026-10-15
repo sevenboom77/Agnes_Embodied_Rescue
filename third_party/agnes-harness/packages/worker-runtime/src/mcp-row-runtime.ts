@@ -1,4 +1,4 @@
-import type { ConnectionStatusEvent, McpServerOpener } from '@agnes/base'
+import type { ConnectionStatusEvent, McpServerExtensionDeps, McpServerOpener } from '@agnes/base'
 import type { Host } from '@agnes/host'
 import {
   type McpStatus,
@@ -162,6 +162,7 @@ export function createMcpRowRuntime(
   deps: Readonly<{
     host: McpRowHost
     opener: McpServerOpener
+    mediaLimits?: McpServerExtensionDeps['mediaLimits']
     /** Update the Windows worker's private executable policy before any newly enabled row starts. */
     beforeApply?(entries: readonly McpServerSnapshotEntry[]): Promise<void>
     /** Upper bound on waiting for started rows' first connection attempts (design §3.8, D120). */
@@ -207,6 +208,7 @@ export function createMcpRowRuntime(
         return epoch === undefined ? entry : { ...entry, revision: `${entry.revision}#${epoch}` }
       })
       const { rows, skipped } = mcpServerRowsFromDefinitions(mounting, deps.opener, {
+        ...(deps.mediaLimits ? { mediaLimits: deps.mediaLimits } : {}),
         onFirstAttempt: (_serverId, ready) => started.push(ready),
         onStatus: (serverId, event) => {
           const revision = revisions.get(serverId)

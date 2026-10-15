@@ -4,17 +4,19 @@ import { BridgeError, JsonlBridge } from "./jsonl-bridge.ts";
 import type { Ros2SensorObservation } from "./sensor-observation.ts";
 import { WorldRegistry } from "./world-registry.ts";
 import { RuntimeWorldState } from "./runtime-world-state.ts";
+import { compactRobotToolResult } from "./tool-result.ts";
+import { nav2TerminalDetails, normalizeNavigationTerminalResult } from "./navigation-result.ts";
 
 export type Ros2PoseGoal = { x: number; y: number; yaw?: number; frame_id?: string };
 // Managed MCP clients have a 60 s request deadline.  Production therefore
-// uses a short initial response and observes the same real Nav2 operation via
-// get_robot_state; the ROS action itself keeps a separate bounded budget.
+// waits briefly for the real terminal result on short routes, then observes
+// longer routes via get_robot_state; the ROS action keeps a separate budget.
 const DEFAULT_NAVIGATION_RPC_BUDGET_MS = 180_000;
 const RECOVERY_BUDGET_MS = 15_000;
 const MIN_RETRY_ACTION_BUDGET_MS = 10_000;
 const RPC_SAFETY_MARGIN_MS = 2_000;
 const DEFAULT_NAVIGATION_ACTION_BUDGET_SEC = 180;
-const DEFAULT_ASYNC_CONFIRMATION_MS = 8_000;
+const DEFAULT_ASYNC_CONFIRMATION_MS = 20_000;
 const navigationRpcBudgetMs = () => {
   const configured = Number(process.env.ROBOT_NAVIGATION_RPC_BUDGET_MS ?? DEFAULT_NAVIGATION_RPC_BUDGET_MS);
   return Number.isFinite(configured) ? Math.max(20_000, Math.min(900_000, configured)) : DEFAULT_NAVIGATION_RPC_BUDGET_MS;
@@ -26,7 +28,7 @@ const navigationActionBudgetSec = () => {
 const asyncNavigation = () => process.env.ROBOT_NAVIGATION_ASYNC === "1";
 const asyncConfirmationMs = () => {
   const configured = Number(process.env.ROBOT_NAVIGATION_CONFIRMATION_MS ?? DEFAULT_ASYNC_CONFIRMATION_MS);
-  return Number.isFinite(configured) ? Math.max(2_000, Math.min(20_000, configured)) : DEFAULT_ASYNC_CONFIRMATION_MS;
+  return Number.isFinite(configured) ? Math.max(2_000, Math.min(30_000, configured)) : DEFAULT_ASYNC_CONFIRMATION_MS;
 };
 export function navigationRetryWithinBudget(startedAt: number, now: number, budgetMs = navigationRpcBudgetMs()): boolean {
   return now - startedAt + RECOVERY_BUDGET_MS + MIN_RETRY_ACTION_BUDGET_MS + RPC_SAFETY_MARGIN_MS < budgetMs;
@@ -61,6 +63,7 @@ export class Ros2RobotGateway {
   readonly bridge: JsonlBridge;
   readonly registry: WorldRegistry;
   readonly runtime = new RuntimeWorldState();
+  private recordedInspectionId: string | null = null;
   constructor(options: { waypoints?: Record<string, Ros2PoseGoal>; registry?: WorldRegistry; bridge?: JsonlBridge } = {}) {
     if(process.env.ROBOT_WORLD_REGISTRY && process.env.ROBOT_WAYPOINTS_FILE && !options.registry && !options.waypoints)
       throw new Error("AMBIGUOUS_COORDINATE_SOURCE");
@@ -88,6 +91,20 @@ export class Ros2RobotGateway {
     if (navigation) {
       this.runtime.updateNavigation(navigation);
       const owner = navigation.operation ?? navigation.last_terminal ?? null;
+      const details = nav2TerminalDetails(owner?.terminal_status ?? navigation.status,
+        owner?.error_code, owner?.error_msg ?? owner?.error_message, owner?.reason);
+      const inspection = navigation.inspection ?? null;
+      if (inspection?.terminal_known === true && inspection.result &&
+          inspection.inspection_id !== this.recordedInspectionId) {
+        const region = this.registry.find(inspection.location);
+        if (region) this.runtime.recordInspection({...inspection.result,
+          inspected: region.type === "room" && inspection.result.inspected === true}, region.id);
+        this.recordedInspectionId = inspection.inspection_id;
+      }
+      // Full scan evidence remains in bridge/tool traces. Bound the polling
+      // response just like inspect_room so native Harness capture stays valid.
+      const scan = inspection ? {...inspection, result: inspection.result
+        ? compactRobotToolResult("inspect_room", inspection.result) : null} : null;
       return {...state, current_location:this.registry.locate(state.pose),
         navigation_status: navigation.status ?? state.navigation_status,
         navigation_active: navigation.active === true,
@@ -95,15 +112,17 @@ export class Ros2RobotGateway {
         navigation_goal_id: owner?.goal_id ?? null,
         navigation_terminal_known: navigation.terminal_known === true,
         navigation_terminal_status: owner?.terminal_status ?? (navigation.terminal_known ? navigation.status : null),
-        navigation_error_code: owner?.error_code ?? null,
+        navigation_error_code: details.error_code,
+        navigation_error_message: details.error_msg,
+        navigation_reason: details.reason ?? null,
         motion_owner: navigation.motion_owner ?? null,
-        inspection_active: navigation.inspection_active === true};
+        inspection_active: navigation.inspection_active === true, inspection: scan};
     }
     return {...state,current_location:this.registry.locate(state.pose)};
   }
   async getWorldState() {
     const robot = await this.getState();
-    const observation = await this.getObservation();
+    const observation: any = await this.getObservation();
     const locations = this.registry.list();
     return {source:"ros2_gazebo_world_model",robot:{...robot,pose:observation.robot_pose},
       current_location:this.registry.locate(observation.robot_pose),known_locations:locations,
@@ -111,6 +130,14 @@ export class Ros2RobotGateway {
       routes:locations.flatMap(l=>l.adjacency.map(to=>({from:l.id,to,status:"OPEN",source:"static_map_only",dynamic_status:"UNKNOWN"}))),
       ...this.runtime.snapshot(),sensor_status:{lidar:observation.lidar.available,camera:observation.camera.available},
       lidar_obstacle_summary:observation.lidar,camera_status:observation.camera,
+      current_observation:{
+        timestamp:observation.camera?.frame_timestamp??observation.vision_observation?.frame_timestamp??null,
+        frame_sha256:observation.vision_observation?.frame_sha256??observation.camera?.png_sha256??null,
+        perception_status:observation.perception_status,
+        perception_error:observation.perception_error??null,
+        perception_error_stage:observation.perception_error_stage??null,
+        semantic_objects:observation.semantic_objects??[],
+      },
       semantic_objects:this.runtime.snapshot().observed_objects,inspected_regions:this.runtime.snapshot().inspected_rooms};
   }
   async getObservation(_input?: unknown): Promise<Ros2SensorObservation> {
@@ -121,13 +148,26 @@ export class Ros2RobotGateway {
     return observation;
   }
   async inspectRoom(location: string) {
-    const region=this.registry.list().find(l=>l.id===location);
-    if(!region || region.type!=="room")return {ok:false,status:"FAILED",room:location,code:"INVALID_LOCATION",reason:"INVALID_LOCATION"};
+    const region=this.registry.find(location);
+    if(!region)return {ok:false,status:"FAILED",room:location,code:"INVALID_LOCATION",reason:"INVALID_LOCATION"};
+    location=region.id;
     try {
       const state=await this.getState();
-      if(state.current_location!==location)return {ok:false,status:"FAILED",room:location,code:"NOT_AT_LOCATION",reason:"NOT_AT_LOCATION"};
-      const result=await this.bridge.request("inspect_room",{room:location},240000);
-      this.runtime.recordInspection(result,location);return result;
+      // Bounded rooms/corridors retain the exact region check. A named
+      // waypoint such as Start may lie inside a corridor's bounds, so only
+      // for unbounded waypoints accept its measured 0.35 m neighborhood.
+      const atWaypoint = !region.bounds && state.pose?.frame_id === "map" &&
+        Number.isFinite(state.pose?.x) && Number.isFinite(state.pose?.y) &&
+        Math.hypot(state.pose.x-region.pose.x,state.pose.y-region.pose.y)<=0.35;
+      if(state.current_location!==location && !atWaypoint)
+        return {ok:false,status:"FAILED",room:location,code:"NOT_AT_LOCATION",reason:"NOT_AT_LOCATION"};
+      if(state.navigation_active || ["ACCEPTED","EXECUTING","CANCELING","RUNNING"].includes(state.navigation_status) || state.motion_owner || state.inspection_active)
+        return {ok:false,status:"FAILED",room:location,code:"MOTION_CONTROL_BUSY",reason:"MOTION_CONTROL_BUSY",
+          inspection_id:state.inspection?.inspection_id??null,poll_via:"get_robot_state"};
+      const result=await this.bridge.request("inspect_room",{
+        room:location,region_type:region.type,async:true,expected_pose:{x:state.pose.x,y:state.pose.y},
+      },10000);
+      return {...result,region_type:region.type};
     }catch(error){return {...failed(error),room:location};}
   }
   async inspectObject(objectId: string) {
@@ -141,6 +181,8 @@ export class Ros2RobotGateway {
     const startedAt = Date.now();
     const rpcBudgetMs = navigationRpcBudgetMs();
     const remainingRequestMs = () => Math.max(1_000, rpcBudgetMs - (Date.now() - startedAt) - RPC_SAFETY_MARGIN_MS);
+    const requestedLocation = location;
+    location = this.registry.find(location)?.id ?? location;
     const id=this.runtime.begin(location);
     // Keep the fixed navigate_to schema and eight-tool contract.  This
     // mission-scoped alias is resolved from a real get_robot_state sample
@@ -148,12 +190,12 @@ export class Ros2RobotGateway {
     const pose = location === MISSION_ORIGIN_ALIAS || location.startsWith(MISSION_ORIGIN_PREFIX)
       ? readMissionOrigin(location) : this.registry.resolve(location);
     if (!pose || !Number.isFinite(pose.x) || !Number.isFinite(pose.y)) {
-      const result={ status: "FAILED", target: location, accepted: false, code: "INVALID_LOCATION", reason: "UNREACHABLE" };
+      const result={ status: "FAILED", target: requestedLocation, accepted: false, code: "INVALID_LOCATION", reason: "INVALID_LOCATION", known_locations: this.registry.list().map(l=>({id:l.id,name:l.name})), recovery: "Call list_known_locations or get_map and use a current registered location ID. No navigation goal was sent." };
       this.runtime.finish(id,result);
       return result.status === "SUCCEEDED" ? { status: "SUCCEEDED", target: location } : result;
     }
     try {
-      // In managed mode the MCP request is deliberately short-lived.  The
+      // In managed mode short routes can finish within this bounded MCP wait. The
       // Python bridge keeps the real Nav2 goal and its ownership; subsequent
       // get_robot_state calls expose the operation and terminal result.  This
       // avoids the SDK's fixed 60s request deadline without cancelling a goal.
@@ -174,8 +216,9 @@ export class Ros2RobotGateway {
           result = { accepted: true, status: terminalStatus === "SUCCEEDED" ? "SUCCEEDED" : "FAILED",
             target: location, goal_id: terminal.goal_id ?? null,
             operation_id: terminal.operation_id ?? null, action_status: terminalStatus,
-            terminal_known: true, error_code: terminal.error_code ?? null,
-            reason: terminalStatus === "CANCELED" ? "ROBOT_STOPPED" : terminalStatus === "ABORTED" ? "NAVIGATION_SYSTEM_UNHEALTHY" : undefined };
+            terminal_known: true,
+            ...nav2TerminalDetails(terminalStatus, terminal.error_code,
+              terminal.error_msg ?? terminal.error_message, terminal.reason) };
         } else if (!owner || snapshot?.active !== true || snapshot?.terminal_known === true) {
           throw error;
         } else result = { accepted: true, status: "PENDING", target: location,
@@ -183,6 +226,7 @@ export class Ros2RobotGateway {
             action_status: owner.state ?? "EXECUTING", terminal_known: false,
             reason: "NAVIGATION_IN_PROGRESS", poll_via: "get_robot_state" };
       }
+      result = normalizeNavigationTerminalResult(result);
       // A failed goal is never promoted to success.  For a real Nav2 abort
       // caused by stale controller/costmap state, perform one bounded,
       // official recovery and submit one fresh goal.  This keeps the action
@@ -198,6 +242,7 @@ export class Ros2RobotGateway {
         result.recovery = { bounded: true, attempts: 1, result: recovery };
         if (recovery?.pass === true) {
           result = await this.bridge.request("navigate_to", { target: location, pose, timeout_sec: 45 }, remainingRequestMs());
+          result = normalizeNavigationTerminalResult(result);
           result.recovery = { bounded: true, attempts: 1, result: recovery };
         }
         }

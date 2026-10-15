@@ -47,14 +47,22 @@ function registryFor(layout) { return readJson(path.resolve(ROOT, layout.registr
 function safeRoomPose(room, random, anchor = null) {
   const center = room.pose || { x: 0, y: 0 };
   const bounds = room.bounds || { min_x: center.x - 0.8, max_x: center.x + 0.8, min_y: center.y - 0.8, max_y: center.y + 0.8 };
-  const candidates = [
+  let candidates = [
     [-0.75, -0.9], [0.75, -0.9], [-0.75, 0.9], [0.75, 0.9],
     [-0.9, 0], [0.9, 0], [0, -1.0], [0, 1.0],
   ].map(([dx, dy]) => ({ x: Number(center.x) + dx, y: Number(center.y) + dy }))
     .filter(point => point.x > bounds.min_x + 0.25 && point.x < bounds.max_x - 0.25 && point.y > bounds.min_y + 0.25 && point.y < bounds.max_y - 0.25)
     .filter(point => !anchor || Math.hypot(point.x - anchor.x, point.y - anchor.y) >= 1.0);
+  // Compact rooms may fit a safe horizontal placement while the diagonal
+  // candidates do not. Keep the existing one-metre anchor clearance.
+  if (!candidates.length && anchor) candidates = [[-1.1, 0], [1.1, 0], [0, -1.1], [0, 1.1]]
+    .map(([dx, dy]) => ({ x: Number(center.x) + dx, y: Number(center.y) + dy }))
+    .filter(point => point.x > bounds.min_x + 0.25 && point.x < bounds.max_x - 0.25 && point.y > bounds.min_y + 0.25 && point.y < bounds.max_y - 0.25)
+    .filter(point => Math.hypot(point.x - anchor.x, point.y - anchor.y) >= 1.0);
   const point = candidates.length ? pick(random, candidates) : { x: Number(center.x), y: Number(center.y) };
-  return { x: round(point.x + (random() - 0.5) * 0.18), y: round(point.y + (random() - 0.5) * 0.18) };
+  const jittered = { x: round(point.x + (random() - 0.5) * 0.18), y: round(point.y + (random() - 0.5) * 0.18) };
+  const inside = jittered.x > bounds.min_x + 0.25 && jittered.x < bounds.max_x - 0.25 && jittered.y > bounds.min_y + 0.25 && jittered.y < bounds.max_y - 0.25;
+  return inside && (!anchor || Math.hypot(jittered.x - anchor.x, jittered.y - anchor.y) >= 1.0) ? jittered : { x: round(point.x), y: round(point.y) };
 }
 
 export function scenarioForSeed(seedInput, { layout: requestedLayout } = {}) {
@@ -90,7 +98,7 @@ export function scenarioForSeed(seedInput, { layout: requestedLayout } = {}) {
     seed,
     layout_id: layout.id,
     generated_at: stamp(),
-    layout: { id: layout.id, label: layout.label, world: layout.world, map: layout.map, registry: layout.registry, nav2: layout.nav2, bridge: layout.bridge, imported: Boolean(layout.imported), alternate_route: layout.alternate_route },
+    layout: { id: layout.id, label: layout.label, world: layout.world, map: layout.map, registry: layout.registry, nav2: layout.nav2, bridge: layout.bridge, imported: Boolean(layout.imported), alternate_route: layout.alternate_route, ...(layout.localization === 'amcl' ? {localization:'amcl'} : {}) },
     robot_start: requestedLayout ? (registry.locations.find(x=>x.id==='Start')?.pose || { x:0,y:0,yaw:0,frame_id:'map' }) : { x: 0, y: 0, yaw: 0, frame_id: 'map' },
     semantic_locations: (registry.locations || []).map(item => ({ id: item.id, type: item.type, pose: item.pose, adjacency: item.adjacency })),
     person_target_room: personRoom,
@@ -141,6 +149,7 @@ export function writeScenario(spec) {
     'export SCENARIO_MAP_ODOM_X='+(layout.imported ? spec.robot_start.x : 0),
     'export SCENARIO_MAP_ODOM_Y='+(layout.imported ? spec.robot_start.y : 0),
     'export SCENARIO_MAP_ODOM_YAW='+(layout.imported ? spec.robot_start.yaw : 0),
+    'export SCENARIO_LOCALIZATION='+(layout.localization === 'amcl' ? 'amcl' : ''),
   ];
   fs.writeFileSync(RUNTIME_ENV, envLines.join('\n') + '\n');
   return spec;

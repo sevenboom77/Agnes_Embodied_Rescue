@@ -16,6 +16,9 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
 ROOT = Path('/data-ssd/zhongchengkai/agnes')
+import sys
+sys.path.insert(0, str(ROOT))
+from simulation.visual_assets.scene_style import person_links
 OUT = Path(os.environ.get('FINAL_RUN_DIR', ROOT / 'artifacts/interactive-live/full-mission'))
 OUT.mkdir(parents=True, exist_ok=True)
 PRIVATE = Path(os.environ.get('SCENARIO_PRIVATE_FILE', ROOT / 'artifacts/interactive-live/imported-runtime/private-scenario.json'))
@@ -98,7 +101,7 @@ def model_sdf(name, x, y, yaw, label, size=(0.35, 0.35, 0.4), collision=False):
                     '<ixx>1.0</ixx><iyy>1.0</iyy><izz>1.0</izz>'
                     '</inertia></inertial>') if collision else ''
     if label == 'person':
-        body = '<link name="body"><visual name="visual"><geometry><box><size>.28 .45 .65</size></box></geometry><material><diffuse>.8 .02 .8 1</diffuse></material></visual></link><link name="head"><pose>0 0 .48 0 0 0</pose><visual name="visual"><geometry><sphere><radius>.17</radius></sphere></geometry><material><diffuse>.8 .55 .4 1</diffuse></material></visual></link>'
+        body = person_links()
     elif label == 'crate_block':
         body = f'<link name="body">{inertial_xml}{collision_xml}<visual name="visual"><geometry><box><size>{sx} {sy} {sz}</size></box></geometry><material><diffuse>.52 .28 .08 1</diffuse></material></visual></link>'
     else:

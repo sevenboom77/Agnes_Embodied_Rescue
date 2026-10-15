@@ -36,3 +36,15 @@
 .env.*
 !.env.example
 *.local
+
+# Generated mission mailboxes, render probes and native build outputs
+/runtime/motion-stop/
+/runtime/navigation/
+/simulation/visual_assets/fire_checks/
+/simulation/visual_assets/volumetric_fire/build/
+/simulation/visual_assets/volumetric_fire/probe/*
+!/simulation/visual_assets/volumetric_fire/probe/*.py
+/simulation/visual_assets/volumetric_fire/probe/*-before-debug.py
+*.log
+
+# Source, textures, meshes and probe scripts remain versioned.

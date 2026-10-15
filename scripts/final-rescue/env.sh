@@ -10,11 +10,11 @@ export GZ_SIM_RESOURCE_PATH="$FINAL_ROOT/simulation/final_rescue"
 export GZ_LOG_PATH="$FINAL_ROOT/logs/final_rescue/gazebo"
 export ROBOT_NAV2_PARAMS="$FINAL_ROOT/simulation/final_rescue/nav2_params.yaml"
 export ROBOT_WORLD_REGISTRY="$FINAL_ROOT/simulation/final_rescue/world_registry.json"
-export ROBOT_GATEWAY=ros2 ROBOT_ROS2_ENV=final_rescue ROBOT_PERCEPTION=cv
+export ROBOT_GATEWAY=ros2 ROBOT_ROS2_ENV=final_rescue ROBOT_PERCEPTION=vlm
 # Managed MCP navigation uses a bounded confirmation response and exposes the
 # still-owned Nav2 operation through get_robot_state.  This keeps the fixed
 # eight-tool contract while avoiding the MCP SDK's 60s request deadline.
-export ROBOT_NAVIGATION_ASYNC=1 ROBOT_NAVIGATION_CONFIRMATION_MS=8000
+export ROBOT_NAVIGATION_ASYNC=1 ROBOT_NAVIGATION_CONFIRMATION_MS=20000
 export ROBOT_NAVIGATION_ACTION_BUDGET_SEC=180 ROBOT_NAVIGATION_RPC_BUDGET_MS=180000
 export ROBOT_MISSION_ORIGIN_FILE="$FINAL_ROOT/runtime/interactive-mission-origin.json"
 export FINAL_RUN_DIR="${FINAL_RUN_DIR:-$FINAL_ROOT/artifacts/final_rescue/manual}"

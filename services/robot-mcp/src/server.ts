@@ -39,7 +39,7 @@ const robot: RobotGatewayBackend = selectedBackend === "ros2" ? new Ros2RobotGat
 }).robot);
 
 type ToolResult = {
-  content: [{ type: "text"; text: string }];
+  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   structuredContent: Record<string, unknown>;
 };
 
@@ -47,6 +47,7 @@ type ToolSpec = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: { readOnlyHint: boolean };
   parse(input: unknown): unknown;
   execute(input: unknown): unknown;
 };
@@ -82,35 +83,36 @@ const objectInput = z.object({ object_id: z.string() }).strict();
 const specs: ToolSpec[] = [
   {
     name: "get_robot_state",
-    description: "Read robot pose and navigation state from the selected backend.",
+    annotations: { readOnlyHint: true },
+    description: "Read robot pose, navigation state and any asynchronous inspection. For inspect_room PENDING, poll this tool until inspection.inspection_id matches the started scan and inspection.terminal_known is true; inspection.result is the real completed scan evidence. Do not infer completion from navigation being idle.",
     inputSchema: emptySchema,
     parse: (input) => emptyInput.parse(input),
     execute: () => robot.getState(),
   },
   {
     name: "get_world_state",
-    description: "Read backend-visible static map, robot state and confirmed runtime facts, never hidden simulator occupants.",
+    description: "Read current world evidence using a fresh Camera frame and Agnes vision on each call. Use get_robot_state for navigation or inspection polling. Reuse a completed inspect_room result or valid open_door verification.fresh_camera_observation for the unchanged view; acquire a new observation after motion or failed vision. Never expose hidden simulator occupants.",
     inputSchema: emptySchema,
     parse: (input) => emptyInput.parse(input),
     execute: () => robot.getWorldState(),
   },
   {
     name: "get_observation",
-    description: "Read passive observations at the robot location.",
+    description: "Acquire a fresh Camera frame and run Agnes vision at the current robot location. Avoid consecutive get_world_state and get_observation calls for the same unchanged view; both run visual inference. Use get_robot_state for motion status.",
     inputSchema: observationSchema,
     parse: (input) => observationInput.parse(input),
     execute: (input) => robot.getObservation(input as { object_id?: string }),
   },
   {
     name: "navigate_to",
-    description: "Navigate to a registered location through the selected backend; for a task-origin return, the existing location string __MISSION_ORIGIN__:<mission_id> resolves only to that mission's real origin captured after mission_reset.",
+    description: "Navigate to a current registered location from list_known_locations. For opening a room door, first call get_map, navigate to that door\'s interaction_location outside the room, if this call returns SUCCEEDED, arrival is confirmed without another state read; if PENDING, poll get_robot_state for the matching navigation_operation_id until navigation_terminal_known and navigation_terminal_status is SUCCEEDED. Then inspect_door and open_door sequentially. Do not reissue navigate_to to poll. Do not navigate into a closed room first or run dependent navigation/door actions in parallel; for a task-origin return, the existing location string __MISSION_ORIGIN__:<mission_id> resolves only to that mission's real origin captured after mission_reset.",
     inputSchema: locationSchema,
     parse: (input) => locationInput.parse(input),
     execute: (input) => robot.navigateTo((input as { location: string }).location),
   },
   {
     name: "inspect_room",
-    description: "Actively inspect the room occupied by the robot.",
+    description: "Scan 360 degrees in place at the currently occupied registered room, corridor, or Start waypoint. Requires confirmed arrival and idle navigation. Returns PENDING with inspection_id promptly; poll get_robot_state until that same inspection_id has terminal_known=true, then read inspection.result. Do not navigate or start another scan while inspection_active. Uses eight fresh Agnes camera views and returns to the initial heading; no person detection means only not seen in these views, not proof an area is empty.",
     inputSchema: locationSchema,
     parse: (input) => locationInput.parse(input),
     execute: (input) => robot.inspectRoom((input as { location: string }).location),
@@ -131,7 +133,8 @@ const specs: ToolSpec[] = [
   },
   {
     name: "list_known_locations",
-    description: "List locations known to the mock robot contract.",
+    annotations: { readOnlyHint: true },
+    description: "List current active-map location IDs, names and map-frame poses. Use these IDs for navigation; never reuse IDs from a previous map.",
     inputSchema: emptySchema,
     parse: (input) => emptyInput.parse(input),
     execute: () => robot.listKnownLocations(),
@@ -149,10 +152,11 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: specs.map(({ name, description, inputSchema }) => ({
+  tools: specs.map(({ name, description, inputSchema, annotations }) => ({
     name,
     description,
     inputSchema,
+    ...(annotations ? { annotations } : {}),
   })),
 }));
 
@@ -193,8 +197,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // Keep the complete bridge result above in the project-owned raw MCP trace;
     // send a bounded semantic equivalent so Harness event capture cannot cut
     // an otherwise successful inspection into invalid JSON.
-    const agentValue = compactRobotToolResult(spec.name, value);
-    return { ...structured(agentValue), ...(value && typeof value === "object" && (value as any).ok === false ? { isError: true } : {}) };
+    const { _camera_image: cameraImage, ...observation } = spec.name === "get_observation" && value && typeof value === "object"
+      ? value as Record<string, any> : { _camera_image: undefined };
+    const agentValue = compactRobotToolResult(spec.name, cameraImage ? observation : value);
+    const result = structured(agentValue);
+    if (cameraImage) result.content.push(cameraImage);
+    return { ...result, ...(value && typeof value === "object" && (value as any).ok === false ? { isError: true } : {}) };
   } catch (error) {
     if (error instanceof z.ZodError) {
       throw new McpError(ErrorCode.InvalidParams, error.message);

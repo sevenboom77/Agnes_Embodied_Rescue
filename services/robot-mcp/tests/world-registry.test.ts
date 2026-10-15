@@ -51,3 +51,76 @@ test("navigation and listed positions share one registry; semantic labels remain
   assert.ok(!JSON.stringify(w).includes("researcher"));
   assert.equal((await g.inspectRoom("Room_A")).code,"PERCEPTION_NOT_CONFIGURED");
 });
+
+
+test("office room formatting aliases resolve uniquely and preserve canonical runtime IDs", async () => {
+  const registry = new WorldRegistry({version:1,frame_id:"map",nearest_threshold:.45,locations:[{id:"Right_Front_Room",name:"右前方小房间",type:"room",pose:{x:6.75,y:5.9,yaw:0,frame_id:"map"},adjacency:[]}]});
+  for (const name of ["Right_Front_Room", "Right Front Room", "right-front-room", "右前方小房间"]) {
+    assert.equal(registry.find(name)?.id, "Right_Front_Room");
+    assert.deepEqual(registry.resolve(name), registry.resolve("Right_Front_Room"));
+  }
+  assert.equal(registry.resolve("Right Room"), undefined);
+  const calls: any[] = [];
+  const bridge = { request: async (method: string, params: any) => {
+    calls.push({method,params});
+    if (method === "navigate_to") return {status:"PENDING",accepted:true,terminal_known:false};
+    throw new Error("Unexpected bridge call");
+  }} as unknown as JsonlBridge;
+  const gateway = new Ros2RobotGateway({registry,bridge});
+  const result = await gateway.navigateTo("Right Front Room");
+  assert.equal(result.status, "PENDING");
+  assert.equal(calls[0].params.target, "Right_Front_Room");
+  assert.deepEqual(calls[0].params.pose, registry.resolve("Right_Front_Room"));
+});
+
+test("unknown location rejects before any robot request and identifies naming failure accurately", async () => {
+  const registry=load();
+  const bridge={request:async()=>{throw new Error("Unknown location must never send a robot command");}} as unknown as JsonlBridge;
+  const result=await new Ros2RobotGateway({registry,bridge}).navigateTo("made-up room");
+  assert.equal(result.code,"INVALID_LOCATION");
+  assert.equal(result.reason,"INVALID_LOCATION");
+  assert.equal(result.accepted,false);
+  assert.ok(result.known_locations.some((l:any)=>l.id==="Room_A"));
+});
+
+test("ambiguous formatting aliases never pick an arbitrary location", () => {
+  const registry=WorldRegistry.historicalWaypoints({"Room_A":{x:0,y:0},"Room-A":{x:2,y:0}});
+  assert.equal(registry.find("room a"),undefined);
+  assert.equal(registry.find("Room_A")?.id,"Room_A");
+});
+
+test("managed short routes can finish within one bounded request; long routes retain their actual goal", async () => {
+  const oldAsync=process.env.ROBOT_NAVIGATION_ASYNC,oldConfirm=process.env.ROBOT_NAVIGATION_CONFIRMATION_MS;
+  process.env.ROBOT_NAVIGATION_ASYNC="1";delete process.env.ROBOT_NAVIGATION_CONFIRMATION_MS;
+  try {
+    const calls:any[]=[];
+    const registry=load();
+    const bridge={request:async(method:string,params:any,timeout:number)=>{
+      calls.push({method,params,timeout});
+      if(method==="navigate_to")return {status:"SUCCEEDED",accepted:true,action_status:"SUCCEEDED",terminal_known:true,operation_id:"short",goal_id:"goal-short"};
+      if(method==="get_robot_state")return {pose:{x:2,y:1}};
+      if(method==="navigation_status")return {status:"SUCCEEDED",terminal_known:true,active:false,last_terminal:{operation_id:"short",goal_id:"goal-short",terminal_status:"SUCCEEDED"}};
+      throw Error("Unexpected command");
+    }} as unknown as JsonlBridge;
+    const result=await new Ros2RobotGateway({registry,bridge}).navigateTo("Room_A");
+    assert.equal(result.status,"SUCCEEDED");assert.equal(calls[0].timeout,20000);
+    assert.equal(calls.filter(c=>c.method==="navigate_to").length,1);
+    const pendingCalls:any[]=[];
+    const pendingBridge={request:async(method:string,params:any,timeout:number)=>{
+      pendingCalls.push({method,params,timeout});
+      if(method==="navigate_to")throw new BridgeError("BRIDGE_TIMEOUT");
+      if(method==="navigation_status")return {status:"EXECUTING",terminal_known:false,active:true,operation:{operation_id:"long",goal_id:"goal-long",state:"EXECUTING"}};
+      throw Error("Unexpected command");
+    }} as unknown as JsonlBridge;
+    const pending=await new Ros2RobotGateway({registry,bridge:pendingBridge}).navigateTo("Room_A");
+    assert.equal(pending.status,"PENDING");assert.equal(pending.operation_id,"long");assert.equal(pending.goal_id,"goal-long");
+    assert.equal(pending.terminal_known,false);assert.equal(pendingCalls.filter(c=>c.method==="navigate_to").length,1);
+    process.env.ROBOT_NAVIGATION_CONFIRMATION_MS="90000";
+    pendingCalls.length=0;
+    await new Ros2RobotGateway({registry,bridge:pendingBridge}).navigateTo("Room_A");
+    assert.equal(pendingCalls[0].timeout,30000);
+  } finally {
+    if(oldAsync===undefined)delete process.env.ROBOT_NAVIGATION_ASYNC;else process.env.ROBOT_NAVIGATION_ASYNC=oldAsync;
+    if(oldConfirm===undefined)delete process.env.ROBOT_NAVIGATION_CONFIRMATION_MS;else process.env.ROBOT_NAVIGATION_CONFIRMATION_MS=oldConfirm;
+  }
+});

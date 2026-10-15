@@ -46,7 +46,17 @@ export class WorldRegistry {
       locations:Object.entries(points).map(([id,p])=>({id,name:id,type:"start",pose:{x:p.x,y:p.y,yaw:p.yaw??0,frame_id:"map"},adjacency:[]}))});
   }
   snapshot() { return structuredClone(this.document); }
-  resolve(id: string) { return structuredClone(this.document.locations.find(l=>l.id===id)?.pose); }
+  find(query: string): SemanticLocation | undefined {
+    const exact = this.document.locations.find(l => l.id === query);
+    if (exact) return structuredClone(exact);
+    // Formatting aliases only; do not guess partial or ambiguous room names.
+    const normalize = (value: string) => value.normalize("NFKC").trim().toLowerCase().replace(/[\s_-]+/gu, "");
+    const key = normalize(query);
+    if (!key) return undefined;
+    const matches = this.document.locations.filter(l => normalize(l.id) === key || normalize(l.name) === key);
+    return matches.length === 1 ? structuredClone(matches[0]) : undefined;
+  }
+  resolve(id: string) { return this.find(id)?.pose; }
   private contains(l: SemanticLocation, p: {x:number;y:number}) {
     const b=l.bounds;
     return b && p.x>=b.min_x && p.x<b.max_x && p.y>=b.min_y && p.y<b.max_y;

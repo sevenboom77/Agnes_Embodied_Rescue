@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   type ConnectionStatusEvent,
   type McpServerConfig,
+  type McpServerExtensionDeps,
   type McpServerOpener,
   mcpCatalogHubFor,
   mcpLocalToolPrefix,
@@ -85,6 +86,7 @@ export function mcpServerRowsFromDefinitions(
   entries: readonly McpServerSnapshotEntry[],
   opener: McpServerOpener,
   options: Readonly<{
+    mediaLimits?: McpServerExtensionDeps['mediaLimits']
     /** Called when a row's extension starts, with its first connection attempt's outcome. Only a row
      *  Host actually (re)mounts starts; an unchanged row keeps its running instance. */
     onFirstAttempt?(serverId: string, ready: Promise<unknown>): void
@@ -150,6 +152,7 @@ export function mcpServerRowsFromDefinitions(
         factory: (ctx: Parameters<typeof mcpCatalogHubFor>[0]) =>
           mcpServerExtension(cfg, {
             catalogHub: mcpCatalogHubFor(ctx),
+            ...(options.mediaLimits ? { mediaLimits: options.mediaLimits } : {}),
             connect: (_cfg: McpServerConfig, signal: AbortSignal) => opener.connect(definition, signal),
             ...(options.onFirstAttempt
               ? { onFirstAttempt: (ready) => options.onFirstAttempt?.(definition.serverId, ready) }

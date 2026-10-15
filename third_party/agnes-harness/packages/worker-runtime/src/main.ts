@@ -466,6 +466,15 @@ export async function runWorker(
     const mcpRows = createMcpRowRuntime({
       host,
       opener: createWorkerMcpServerOpener(workerResourcesInput, managedAllowed),
+      // Use the same reviewed profile budgets for MCP images and provider request selection.
+      mediaLimits: {
+        maxBytesPerImage: imageBytes,
+        maxPixelsPerImage: dimension * dimension,
+        maxAggregateBytes: computerUse.capture.maxImagesPerModelRequest * imageBytes,
+        maxAggregatePixels: computerUse.capture.maxImagesPerModelRequest * dimension * dimension,
+        maxImages: computerUse.capture.maxImagesPerModelRequest,
+        maxBlocks: computerUse.capture.maxImagesPerModelRequest * 2,
+      },
       beforeApply: (entries) =>
         syncManagedMcpExecutableAllowlist(
           entries,

@@ -81,6 +81,8 @@ export type WebServerOptions = {
   root: string
   /** Credential-free loopback WebSocket endpoint advertised to the browser. */
   wsUrl: string
+  /** Optional loopback launcher's same-origin WebSocket proxy. */
+  handleUpgrade?: (request: IncomingMessage, socket: import('node:net').Socket, head: Buffer) => void
   /** @deprecated Ignored legacy input; local Web access no longer uses a browser token. */
   token?: string
   /** Fixed local HTTP port. The default is kept stable for the daemon origin contract. */
@@ -685,6 +687,10 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
       const missing = error instanceof Error && error.message === 'Web asset not found'
       response.writeHead(missing ? 404 : 500).end(missing ? '' : 'web assets unavailable')
     }
+  })
+  server.on('upgrade', (request, socket, head) => {
+    if (options.handleUpgrade) options.handleUpgrade(request, socket, head)
+    else socket.destroy()
   })
   const sockets = new Set<import('node:net').Socket>()
   server.on('connection', (socket) => {

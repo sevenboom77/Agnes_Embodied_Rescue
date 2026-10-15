@@ -1,4 +1,5 @@
-type Event = { type: string; tool?: string; args?: any; result?: any; text?: string };
+import { createTargetEvidence } from '../../packages/embodied-rescue-plugin/src/backend/target-evidence.mjs';
+type Event = { type: string; tool?: string; args?: any; result?: any; text?: string; timestamp?: string };
 
 const LOCATION_RE = /Room_[A-Z]|Corridor_[A-Z]|Location_[A-Za-z0-9]+|Side_Corridor|Start|A_(?:Main|Site|Tree|Link)/g;
 const NEGATIVE_WORDS = /不要|不必|无需|禁止|不得|不能|不准|勿|不需要/u;
@@ -19,7 +20,7 @@ export function agnesTurnCompletionError(turn: any) {
   };
 }
 
-const baseTool = (name = '') => String(name).replace(/^mcp_robot_mcp_[^_]+_/, '').replace(/^mcp_robot_mcp_/, '');
+const baseTool = (name = '') => String(name).replace(/^mcp_(?:robot_mcp|envdoor)_[^_]+_/, '').replace(/^mcp_robot_mcp_/, '');
 /**
  * MCP tool results arrive through several legal envelopes.  The live SDK can
  * deliver a JSON object, a JSON string in a text content block, or a content
@@ -87,8 +88,54 @@ function isDoorObservationMention(task: string, index: number, length: number) {
   const context = task.slice(Math.max(0, index - 40), Math.min(task.length, index + length + 40));
   return /inspect[_\s-]*door|open[_\s-]*door|门|door/iu.test(context);
 }
-function locationsInTask(task: string) {
-  return [...task.matchAll(LOCATION_RE)].map(match => ({ id: match[0], index: match.index ?? 0, forbidden: negativeNear(task, match.index ?? 0) }));
+export type EvaluationMap = {
+  locations: Array<{id:string;name:string;type?:string}>;
+  doors: Array<{id:string;connects:string[];interaction_location?:string;interaction_pose?:{x:number;y:number}}>;
+};
+function aliasPattern(value: string) {
+  return value.normalize("NFKC").trim().split(/[\s_-]+/u)
+    .map(part => part.replace(/[.*+?^{}$()|[\]\\]/g, "\\$&")).join("[\\s_-]+");
+}
+function locationsInTask(task: string, map?: EvaluationMap) {
+  if (!map) return [...task.matchAll(LOCATION_RE)].map(match => ({ id: match[0], index: match.index ?? 0, forbidden: negativeNear(task, match.index ?? 0) }));
+  const mentions: Array<{id:string;index:number;forbidden:boolean}> = [];
+  for (const location of map.locations) {
+    for (const alias of new Set([location.id, location.name])) {
+      if (!alias) continue;
+      for (const match of task.matchAll(new RegExp(aliasPattern(alias), "giu"))) {
+        const index=match.index ?? 0;
+        const clauseStart=Math.max(task.lastIndexOf("。",index),task.lastIndexOf("；",index),task.lastIndexOf(";",index),task.lastIndexOf("\n",index))+1;
+        const prefix=task.slice(clauseStart,index);
+        // A previous failed route describes history, not another destination.
+        if (/(?:上一轮|前一轮|上次|previous\s+(?:turn|attempt))/iu.test(prefix)
+            && !/(?:请|现在|接下来|本轮|本次|重复|再次|navigate[_\s-]*to|go\s+to)/iu.test(prefix)) continue;
+        if (!mentions.some(m=>m.id===location.id && m.index===index)) mentions.push({id:location.id,index,forbidden:negativeNear(task,index)});
+      }
+    }
+  }
+  return mentions.sort((a,b)=>a.index-b.index);
+}
+function doorRequirements(task: string, mentions: Array<{id:string;index:number;forbidden:boolean}>, map?: EvaluationMap) {
+  if (!map) return [];
+  const openings=[...task.matchAll(/开门|打开[^。！？；;\n]{0,20}(?:门|door)|(?:门|door)[^。！？；;\n]{0,12}打开|open(?:[_\s-]+(?:the|[A-Za-z0-9]+)){0,8}[_\s-]+door/giu)]
+    .filter(m=>!negativeNear(task,m.index ?? 0) && !/(?:保持|维持)(?:已|已经)?打开/u.test(m[0]));
+  const required: Array<{door_id:string;interaction_location:string;room:string|null;mention_index:number|null}>=[];
+  for (const opening of openings) {
+    const index=opening.index ?? 0;
+    const clauseStart=Math.max(task.lastIndexOf("。",index),task.lastIndexOf("；",index),task.lastIndexOf(";",index),task.lastIndexOf("\n",index))+1;
+    const nextBoundary=task.slice(index).search(/[。！？；;\n]/u);
+    const clause=task.slice(clauseStart,Math.min(task.length,index+opening[0].length+60,
+      nextBoundary<0?task.length:index+nextBoundary));
+    const explicit=map.doors.filter(d=>new RegExp(aliasPattern(d.id),"iu").test(clause));
+    const roomMention=mentions.filter(m=>!m.forbidden && m.index>=clauseStart && Math.abs(m.index-index)<120
+      && map.locations.find(l=>l.id===m.id)?.type==="room").sort((a,b)=>Math.abs(a.index-index)-Math.abs(b.index-index))[0];
+    const candidates=explicit.length ? explicit : roomMention ? map.doors.filter(d=>d.connects.includes(roomMention.id)) : [];
+    if (candidates.length!==1) continue;
+    const d=candidates[0];
+    if (!required.some(r=>r.door_id===d.id)) required.push({door_id:d.id,interaction_location:d.interaction_location || d.id+"_interaction",
+      room:roomMention?.id || null,mention_index:roomMention?.index ?? null});
+  }
+  return required;
 }
 function isOrderedSubsequence(actual: string[], required: string[]) {
   if (!required.length) return true;
@@ -101,7 +148,7 @@ const RETURN_VERB_RE = /返回|回到|回至|回去|return\s+to|go\s+back\s+to/i
 const ORIGIN_WORD_RE = /(?:一开始|本次任务开始|任务开始|出发|origin|where\s+you\s+started|starting\s+position)/iu;
 const PLACE_WORD_RE = /(?:位置|地方|地点|出发处|出发点|起始处|point|place|location|position|origin)/iu;
 const START_WORD_RE = /(?:地图上的\s*)?Start|起点|起始位置/iu;
-function parseReturnReference(task: string, missionId?: string): ReturnReference | null {
+function parseReturnReference(task: string, missionId?: string, map?: EvaluationMap): ReturnReference | null {
   const match = RETURN_VERB_RE.exec(task);
   if (!match) return null;
   const index = match.index ?? 0;
@@ -111,13 +158,24 @@ function parseReturnReference(task: string, missionId?: string): ReturnReference
     return { mode: 'task_origin', target: originAliasForMission(missionId), index };
   }
   if (START_WORD_RE.test(tail)) return { mode: 'semantic_start', target: 'Start', index };
-  const named = /(?:Start|Room_[A-Z]|Corridor_[A-Z]|Location_[A-Za-z0-9]+|Side_Corridor|A_(?:Main|Site|Tree|Link))/u.exec(tail);
-  if (named) return { mode: 'named_location', target: named[0], index };
+  const named = locationsInTask(tail,map).find(m=>!m.forbidden);
+  if (named) return { mode: 'named_location', target: named.id, index };
   if (/那里|那里边|原处|that\s+place|there/iu.test(tail)) return { mode: 'ambiguous', target: null, index };
   return null;
 }
-export function extractRequirements(task: string, missionId?: string) {
-  const mentions = locationsInTask(task);
+export function extractRequirements(task: string, missionId?: string, map?: EvaluationMap) {
+  const originalMentions = locationsInTask(task,map);
+  const requiredDoorOpenings = doorRequirements(task,originalMentions,map);
+  const explicitRoomEntry = positiveMention(task,/进入|enter|inside/iu);
+  // A door-opening objective reaches the outside approach, not a room behind
+  // its closed leaf. Explicit room entry remains a separate navigation target.
+  const mentions = originalMentions.flatMap(m=>{
+    const d=requiredDoorOpenings.find(d=>d.room===m.id && d.mention_index===m.index);
+    if (!d || m.forbidden) return [m];
+    return explicitRoomEntry ? [{...m,id:d.interaction_location},m] : [{...m,id:d.interaction_location}];
+  });
+  for (const d of requiredDoorOpenings) if (d.mention_index===null && !mentions.some(m=>m.id===d.interaction_location && !m.forbidden)) mentions.push({id:d.interaction_location,index:task.indexOf(d.door_id),forbidden:false});
+  mentions.sort((a,b)=>a.index-b.index);
   const forbiddenLocations = [...new Set(mentions.filter(item => item.forbidden).map(item => item.id))];
   // A task often repeats a location while describing the observation or
   // interaction at that location.  Consecutive repeats describe one
@@ -143,30 +201,33 @@ export function extractRequirements(task: string, missionId?: string) {
     forbiddenActions.add('inspect_room'); forbiddenActions.add('inspect_object');
   }
   if (/(?:不要|不必|无需|禁止|不得|不能|不准|勿|不需要)[^。！？；;\n]{0,24}(?:寻找|搜索|找人|人员|研究员|person|search|find)/iu.test(task)) forbiddenActions.add('person_search');
-  const returnReference = parseReturnReference(task, missionId);
+  if (/(?:不要|不必|无需|禁止|不得|不能|不准|勿|不需要)[^。！？；;\n]{0,24}(?:开门|打开门|open[_\s-]+(?:the[_\s-]+)?door)/iu.test(task)) forbiddenActions.add('open_door');
+  const returnReference = parseReturnReference(task, missionId,map);
   const returnMode = returnReference?.mode === 'ambiguous' ? 'ambiguous' : returnReference?.mode ?? null;
   const finalReturnTarget = returnReference?.target ?? null;
   if (finalReturnTarget && !requiredLocations.includes(finalReturnTarget)) {
     const insertAt = mentions.filter(item => !item.forbidden && item.index < (returnReference?.index ?? task.length)).length;
     requiredLocations.splice(insertAt, 0, finalReturnTarget);
   }
-  const personSearchRequired = positiveMention(task, /搜索.*(?:人|人员|研究员|person)|寻找.*(?:人|人员|研究员)|失联研究员|find.*(?:person|researcher)/iu);
+  const personSearchRequired = positiveMention(task, /搜索.*(?:人|人员|研究员|person)|寻找.*(?:人|人员|研究员)|找(?:到)?.{0,8}(?:待救援|待援救|人员)|失联研究员|find.*(?:person|researcher)/iu);
   const reinspectionRequired = positiveMention(task, /复检|重新检查|reinspect|re-?check|再检查/iu);
   const navigationVerbMention = positiveMention(task, /去|进入|前往|到达|navigate|go\s+to/iu);
   const needsNavigation = requiredLocations.length > 0 || navigationVerbMention;
   const needsInspection = inspectionPositive && !forbiddenActions.has('inspect_room') && !forbiddenActions.has('inspect_object');
-  const rescueTask = positiveMention(task, /失联研究员|救援任务|rescue\s+mission|find\s+the\s+missing/iu);
+  const rescueTask = positiveMention(task, /失联研究员|待(?:救援|援救)人员|救援任务|rescue\s+mission|find\s+the\s+missing/iu);
   const riskReportRequired = positiveMention(task,
     /(?:报告|汇报|report|summari[sz]e).{0,24}(?:环境)?(?:风险|危险|risk|hazard)|(?:风险|危险|risk|hazard).{0,24}(?:报告|汇报|report|summari[sz]e)/iu);
   const dynamicEventRequired = positiveMention(task, /动态事件|dynamic\s+event|causal\s+replan|因果(?:重规划|重规划链)/iu);
   const navigationTargetMissing = navigationVerbMention && requiredLocations.length === 0 && !rescueTask && returnMode !== 'ambiguous';
   const requiredActions: any[] = requiredLocations.map(target => ({ action: 'navigate_to', target }));
+  for (const door of requiredDoorOpenings) requiredActions.push({action:'open_door',target:door.door_id});
   if (needsInspection) requiredActions.push({ action: 'inspect_room', target: inspectionTarget });
   if (reportLocation) requiredActions.push({ action: 'report_location', target: requiredLocations.at(-1) || null });
   return {
     needsNavigation,
     required_locations: requiredLocations,
     required_actions: requiredActions,
+    required_door_openings: requiredDoorOpenings,
     required_inspection: needsInspection,
     inspection_target: inspectionTarget,
     final_return_target: finalReturnTarget,
@@ -191,11 +252,11 @@ function navigationHealthFailure(event: Event) {
   return [104, '104', 'ROS2_TIMEOUT', 'NAVIGATION_SYSTEM_UNHEALTHY'].includes(code) || ['ABORTED', 'TIMEOUT'].includes(result?.action_status) || ['TIMEOUT', 'ROS2_TIMEOUT', 'NAVIGATION_SYSTEM_UNHEALTHY'].includes(result?.reason);
 }
 function hasPersonEvidence(events: Event[]) {
-  return events.some(event => {
-    if (!['inspect_room', 'inspect_object', 'get_observation'].includes(baseTool(event.tool)) || !succeeded(event.result)) return false;
-    const value = resultText(event.result);
-    return /person|人员|研究员/u.test(value) && /ros2_camera_perception|camera|frame_timestamp/iu.test(value);
-  });
+  const evidence = createTargetEvidence(() => 0);
+  for (const event of events) {
+    if (event.type === 'tool_result') evidence.observe('mcp_robot_mcp_eval_'+baseTool(event.tool),event.result);
+  }
+  return Boolean(evidence.confirmation());
 }
 
 function hasSensorObservation(events: Event[]) {
@@ -278,9 +339,9 @@ function navigationTerminalEvidence(scopedEvents: Event[]) {
   });
 }
 
-export function evaluateMission(task: string, events: Event[], report: string, turnError: any, stopped: boolean, missionId?: string, causalEvidence: any = null) {
+export function evaluateMission(task: string, events: Event[], report: string, turnError: any, stopped: boolean, missionId?: string, causalEvidence: any = null, map?: EvaluationMap) {
   const scopedEvents = currentMissionEvents(normalizeEventResults(events), missionId);
-  const requirements = extractRequirements(task, missionId);
+  const requirements = extractRequirements(task, missionId,map);
   const constraints = requirements.constraints;
   const toolResults = scopedEvents.filter(e => e.type === 'tool_result');
   const toolCalls = scopedEvents.filter(e => e.type === 'tool_call');
@@ -291,6 +352,24 @@ export function evaluateMission(task: string, events: Event[], report: string, t
   const roomInspections = toolResults.filter(e => baseTool(e.tool) === 'inspect_room');
   const inspectionSuccess = inspections.filter(e => succeeded(e.result));
   const roomInspectionSuccess = roomInspections.filter(e => succeeded(e.result));
+  const doorOpenResults = toolResults.filter(e=>baseTool(e.tool)==='open_door');
+  const doorChecks = requirements.required_door_openings.map(door=>{
+    const verified = doorOpenResults.find(open=>{
+      const r=objectResult(open.result);
+      if (!succeeded(r) || r.door_id!==door.door_id || r.runtime_state!=='OPEN'
+          || !['DOOR_OPEN_VERIFIED','ALREADY_OPEN'].includes(r.code) || !r.verification) return false;
+      const openIndex=scopedEvents.indexOf(open);
+      return scopedEvents.slice(0,openIndex).some(inspect=>{
+        const v=objectResult(inspect.result);
+        return inspect.type==='tool_result' && baseTool(inspect.tool)==='inspect_door' && succeeded(v)
+          && v.door_id===door.door_id && v.evidence?.source?.includes('Agnes')
+          && v.evidence?.near_interaction_pose===true && v.evidence?.frame_hashes?.some((hash:any)=>typeof hash==='string' && /^[a-f0-9]{64}$/i.test(hash));
+      });
+    });
+    return {...door,open_verified:Boolean(verified),result:verified?.result || null};
+  });
+  const doorOpeningSatisfied=doorChecks.every(d=>d.open_verified);
+
   // get_robot_state is a read-only observation and its real ROS2 result does
   // not carry an action-style status field.  A finite map pose is the success
   // evidence; accepting only succeeded() would erase the task-origin sample.
@@ -341,24 +420,59 @@ export function evaluateMission(task: string, events: Event[], report: string, t
       return stateIndex > start && (nextNavigation < 0 || stateIndex < nextNavigation) && poseNearOrigin(state.result?.pose);
     });
   });
+  // A door task can start at its approach. Certify this only with this
+  // turn's stationary ROS pose, current-map geometry, frame-backed inspection
+  // and measured opening; a map prior or report alone cannot replace arrival.
+  const poseNear = (pose: any, target: any, radius: number) => pose?.frame_id === "map"
+    && [pose.x, pose.y, target?.x, target?.y].every(Number.isFinite)
+    && Math.hypot(pose.x-target.x, pose.y-target.y) <= radius;
+  const approachEvents = doorChecks.filter(d=>d.open_verified).flatMap(d=>{
+    const target=map?.doors.find(item=>item.id===d.door_id)?.interaction_pose;
+    if (!target) return [];
+    return toolResults.filter(inspect=>{
+      const v=objectResult(inspect.result), index=scopedEvents.indexOf(inspect);
+      if (baseTool(inspect.tool)!=="inspect_door" || !succeeded(v) || v.door_id!==d.door_id
+          || v.evidence?.near_interaction_pose!==true || !poseNear(v.robot_pose,target,1.6)) return false;
+      const lastMotion=scopedEvents.slice(0,index).findLastIndex(e=>baseTool(e.tool)==="navigate_to");
+      return states.some(state=>{
+        const stateIndex=scopedEvents.indexOf(state);
+        const age=Date.parse(inspect.timestamp||"")-Date.parse(state.timestamp||"");
+        return stateIndex>lastMotion && stateIndex<index && Number.isFinite(age) && age>=0 && age<=30000
+          && state.result.navigation_active===false
+          && state.result.linear_velocity===0 && state.result.angular_velocity===0
+          && poseNear(state.result.pose,v.robot_pose,.25);
+      });
+    }).map(event=>({event,target:d.interaction_location}));
+  });
+  const rawNavigation = toolResults.filter(event=>baseTool(event.tool)==="navigate_to");
+  const reachedTargets = scopedEvents.flatMap(event=>{
+    const navIndex = rawNavigation.indexOf(event);
+    const nav = navIndex >= 0 ? navigation[navIndex] : null;
+    if (nav && succeeded(nav.result)) return [semanticNavigationTarget(nav.result)];
+    return approachEvents.filter(item=>item.event===event).map(item=>item.target);
+  }).filter(Boolean);
   const requiredLocations = requirements.required_locations;
   const canonicalRequiredLocations = requiredLocations.map(canonicalTarget);
   const requiredLocation = requiredLocations.at(-1) || null;
   const locationChecks = requiredLocations.map(target => ({
     target,
     navigation_success: navigationSuccess.some(e => reachedTarget(e.result, target)),
+    approach_pose_verified: approachEvents.some(item=>item.target===target),
     // A successful NavigateToPose result is itself terminal evidence that the
     // requested semantic target was reached.  A later robot-state sample is
     // still accepted when available, but is not required to certify the same
     // completed action.
     location_verified: isOriginTarget(target)
       ? originNavigationVerified
-      : navigationSuccess.some(e => reachedTarget(e.result, target)) || states.some(e => e.result?.current_location === target),
+      : navigationSuccess.some(e => reachedTarget(e.result, target)) || states.some(e => e.result?.current_location === target) || approachEvents.some(item=>item.target===target),
   }));
-  const sequenceVerified = isOrderedSubsequence(successfulNavigationTargets, canonicalRequiredLocations);
+  const sequenceVerified = isOrderedSubsequence(approachEvents.length ? reachedTargets : successfulNavigationTargets, canonicalRequiredLocations);
   const finalLocationVerified = requirements.return_mode === 'task_origin'
     ? Boolean(isOriginTarget(finalNavigation?.target) && originVerified)
-    : !requiredLocation || finalLocation === requiredLocation || reachedTarget(finalNavigation, requiredLocation);
+    : !requiredLocation || finalLocation === requiredLocation || reachedTarget(finalNavigation, requiredLocation)
+      || approachEvents.some(item=>item.target===requiredLocation
+        && !scopedEvents.slice(scopedEvents.indexOf(item.event)+1).some(e=>baseTool(e.tool)==="navigate_to")
+        && poseNear(finalState?.pose,map?.doors.find(d=>d.interaction_location===requiredLocation || d.id+"_interaction"===requiredLocation)?.interaction_pose,1.6));
   const returnNavigationSatisfied = !requirements.return_required || (
     requirements.final_return_required
       ? reachedTarget(finalNavigationAttempt, requirements.final_return_target) && succeeded(finalNavigationAttempt) && finalLocationVerified
@@ -367,7 +481,7 @@ export function evaluateMission(task: string, events: Event[], report: string, t
   const finalReturnSatisfied = returnNavigationSatisfied;
   const locationSatisfied = !requirements.needsNavigation || (requiredLocations.length === 0
     ? navigationSuccess.length > 0
-    : sequenceVerified && locationChecks.every(item => item.navigation_success && item.location_verified) && finalLocationVerified && finalReturnSatisfied);
+    : sequenceVerified && locationChecks.every(item => (item.navigation_success || item.approach_pose_verified) && item.location_verified) && finalLocationVerified && finalReturnSatisfied);
   // A free-standing person/object reinspection has no implied room target.
   // Do not silently bind it to the mission's last navigation objective (often
   // Start); only an explicitly extracted inspection location is restrictive.
@@ -381,7 +495,9 @@ export function evaluateMission(task: string, events: Event[], report: string, t
   const forbiddenInspection = constraints.forbidden_actions.some(action => ['inspect_room', 'inspect_object'].includes(action)) ? inspections : [];
   const personSearch = toolCalls.filter(e => String(e.tool || '').includes('mcp_robot_mcp_') && /person|search|find|寻找|搜索|人员|研究员/iu.test(baseTool(e.tool)) && !['get_robot_state', 'get_world_state', 'world_memory_get'].includes(baseTool(e.tool)));
   const forbiddenPersonSearch = constraints.forbidden_actions.includes('person_search') ? personSearch : [];
+  const forbiddenDoorOpenings = constraints.forbidden_actions.includes('open_door') ? doorOpenResults.filter(e=>succeeded(e.result)) : [];
   const violations = [
+    ...forbiddenDoorOpenings.map(e=>({type:'forbidden_action',action:'open_door',result:e.result})),
     ...forbiddenNavigation.map(e => ({ type: 'forbidden_location', target: e.result?.target, result: e.result })),
     ...forbiddenInspection.map(e => ({ type: 'forbidden_action', action: baseTool(e.tool), result: e.result })),
     ...forbiddenPersonSearch.map(e => ({ type: 'forbidden_action', action: 'person_search', tool: baseTool(e.tool), result: e.result })),
@@ -391,7 +507,8 @@ export function evaluateMission(task: string, events: Event[], report: string, t
   // unresolved failures are decided from terminal events and explicit
   // incomplete language below.  This keeps report prose from overriding the
   // real action/evaluator evidence.
-  const reportFailure = /cannot complete|unable to|navigation (?:failed|unavailable)|unable to inspect|无法完成|无法移动|导航子系统.*异常|不能完成|无法检查|not at location|任务状态\s*[：:]\s*(?:部分完成|失败)|任务部分完成|无法继续.*(?:返回|导航)|未能(?:返回|进入|搜索)/iu.test(report || '');
+  const embeddedProviderFailure = /\[assistant turn failed:\s*provider error\b/iu.test(report || '');
+  const reportFailure = embeddedProviderFailure || /cannot complete|unable to|navigation (?:failed|unavailable)|unable to inspect|无法完成|无法移动|导航子系统.*异常|不能完成|无法检查|not at location|任务状态\s*[：:]\s*(?:部分完成|失败)|任务部分完成|无法继续.*(?:返回|导航)|未能(?:返回|进入|搜索)/iu.test(report || '');
   const reportProgressOnly = /(?:let me|need to|still need|remaining.{0,20}(?:survey|inspect|search)|接下来.{0,20}(?:检查|搜索|查看)|还需要.{0,20}(?:检查|搜索|查看)|仍需.{0,20}(?:检查|搜索|查看)|让我.{0,20}(?:继续|完成|检查))/iu.test(report || '');
   const riskReportSatisfied = !requirements.risk_report_required || riskReportComplete(report, scopedEvents);
   const unresolvedNavigation = navigation.some(event => {
@@ -416,17 +533,18 @@ export function evaluateMission(task: string, events: Event[], report: string, t
   const unresolvedSearch = Array.isArray(latestMemory.blocked_routes) && latestMemory.blocked_routes.length > 0 || Array.isArray(latestMemory.current_plan) && latestMemory.current_plan.some((step: any) => step?.status === 'blocked' || step?.status === 'pending');
   const searchSatisfied = !requirements.person_search_required || (targetObserved && !unresolvedSearch && (!requirements.final_return_required || finalReturnSatisfied));
   const reinspectionSatisfied = !requirements.reinspection_required || activePerception;
-  const rescueEvidence = requirements.rescue_task && targetObserved && activePerception && report.length > 40 && (!requirements.dynamic_event_required || (dynamicBlock && replanObserved && causalReplanProven));
+  const rescueEvidence = requirements.rescue_task && targetObserved && report.length > 40 && (!requirements.dynamic_event_required || (dynamicBlock && replanObserved && causalReplanProven));
   const navigationSystemUnhealthy = navigationFailures.filter(navigationHealthFailure).length >= 3;
   const ambiguousReference = requirements.return_mode === 'ambiguous';
-  const complete = !turnError && !stopped && !ambiguousReference && !requirements.navigation_target_missing && !reportFailure && !reportProgressOnly && !unresolvedNavigation && riskReportSatisfied && !navigationSystemUnhealthy && violations.length === 0 && locationSatisfied && inspectionSatisfied && reportHasLocation && searchSatisfied && reinspectionSatisfied && (!requirements.rescue_task || rescueEvidence);
-  const progress = navigationSuccess.length > 0 || inspectionSuccess.length > 0 || targetObserved;
+  const complete = !turnError && !stopped && !ambiguousReference && !requirements.navigation_target_missing && !reportFailure && !reportProgressOnly && !unresolvedNavigation && riskReportSatisfied && !navigationSystemUnhealthy && violations.length === 0 && locationSatisfied && doorOpeningSatisfied && inspectionSatisfied && reportHasLocation && searchSatisfied && reinspectionSatisfied && (!requirements.rescue_task || rescueEvidence);
+  const progress = navigationSuccess.length > 0 || inspectionSuccess.length > 0 || doorChecks.some(d=>d.open_verified) || targetObserved;
   const status = stopped ? 'CANCELED' : complete ? 'SUCCEEDED' : progress ? 'PARTIAL' : 'FAILED';
   const reasons = [
     ...(turnError ? ['REAL_LLM_TURN_FAILED'] : []),
     ...(navigationSystemUnhealthy ? ['NAVIGATION_SYSTEM_UNHEALTHY'] : []),
     ...(!sequenceVerified && requiredLocations.length ? ['REQUIRED_NAVIGATION_SEQUENCE_NOT_CONFIRMED'] : []),
     ...(!locationSatisfied && requirements.needsNavigation ? ['TARGET_LOCATION_NOT_VERIFIED'] : []),
+    ...(!doorOpeningSatisfied ? ['REQUIRED_DOOR_OPEN_NOT_CONFIRMED'] : []),
     ...(requirements.required_inspection && !inspectionSatisfied ? ['REQUIRED_INSPECTION_NOT_CONFIRMED'] : []),
     ...(requirements.required_report_location && !reportHasLocation ? ['FINAL_REPORT_LOCATION_NOT_CONFIRMED'] : []),
     ...(requirements.final_return_required && !finalReturnSatisfied ? ['FINAL_RETURN_NOT_CONFIRMED'] : []),
@@ -436,6 +554,7 @@ export function evaluateMission(task: string, events: Event[], report: string, t
     ...(requirements.reinspection_required && !reinspectionSatisfied ? ['REINSPECTION_NOT_CONFIRMED'] : []),
     ...(violations.length ? ['FORBIDDEN_CONSTRAINT_VIOLATED'] : []),
     ...(reportFailure ? ['FINAL_REPORT_SAYS_INCOMPLETE'] : []),
+    ...(embeddedProviderFailure ? ['AGNES_EMBEDDED_PROVIDER_FAILURE'] : []),
     ...(reportProgressOnly ? ['FINAL_REPORT_IS_PROGRESS_ONLY'] : []),
     ...(requirements.risk_report_required && !riskReportSatisfied ? ['RISK_REPORT_NOT_GROUNDED_OR_INCOMPLETE'] : []),
     ...(unresolvedNavigation ? ['NAVIGATION_TERMINAL_UNKNOWN'] : []),
@@ -447,7 +566,8 @@ export function evaluateMission(task: string, events: Event[], report: string, t
     ...(requirements.rescue_task && !rescueEvidence ? ['RESCUE_EVIDENCE_NOT_CONFIRMED'] : []),
   ];
   const evidence = {
-    navigation: { attempts: navigation.map(e => e.result), successful_targets: successfulNavigationTargets, required_sequence: requiredLocations, sequence_verified: sequenceVerified, final_pose: finalPose, final_location: finalLocation, location_checks: locationChecks },
+    doors: doorChecks,
+    navigation: { attempts: navigation.map(e => e.result), successful_targets: successfulNavigationTargets, required_sequence: requiredLocations, sequence_verified: sequenceVerified, approach_observations: approachEvents.map(item=>({target:item.target,pose:item.event.result?.robot_pose})), final_pose: finalPose, final_location: finalLocation, location_checks: locationChecks },
     inspections: { all: inspections.map(e => ({ tool: baseTool(e.tool), result: e.result })), successful: inspectionSuccess.map(e => ({ tool: baseTool(e.tool), result: e.result })), successful_inspections: roomInspectionSuccess.map(e => e.result) },
     final_pose: { pose: finalPose, location: finalLocation, report_has_location: reportHasLocation, task_origin_pose: originPose, distance_to_task_origin: originDistance, task_origin_verified: originVerified },
     constraints: { violations, forbidden_navigation: forbiddenNavigation.map(e => e.result) },

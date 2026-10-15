@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn,execFileSync} from 'node:child_process';
 const ROOT='/data-ssd/zhongchengkai/agnes';
 const BUILTINS=[
  {id:'classic',name:'经典地图',kind:'PHYSICAL_MAP',description:'原有经典救援拓扑；切换后以新 seed 随机布置物品。',physical_activation:'SELECT_TO_ACTIVATE'},
- {id:'lotus',name:'莲华古城',kind:'PHYSICAL_MAP',description:'非官方 A/B/C 三点简化骨架；不含游戏旋转门、破坏墙和高差机制。',physical_activation:'SELECT_TO_ACTIVATE'}
+ {id:'office-fire',name:'室内办公室',kind:'PHYSICAL_MAP',description:'按用户草图搭建的四房间室内办公室；封闭天花板、三排电脑工位、默认关闭且可开启的房门。',physical_activation:'SELECT_TO_ACTIVATE'}
 ];
 function fail(code,message){const e=new Error(message);e.code=code;throw e;}
 const within=p=>{const v=path.resolve(p);if(!v.startsWith(ROOT+'/'))fail(400,'路径不在 Agnes 工作区');return v;};
@@ -36,10 +36,14 @@ export function createMapCatalog({store=ROOT+'/artifacts/demo-ui-final/map-catal
   return data;
  };
  const detail=id=>{
-  if(id==='classic')return {...BUILTINS[0],geometry:null};
-  if(id==='lotus'){
-   const s=JSON.parse(fs.readFileSync(ROOT+'/maps/imported/lotus_demo/lotus_skeleton.json','utf8'));
-   return {...BUILTINS[1],geometry:Object.fromEntries(['boundary','walls','rooms','corridors','doors','start_poses'].map(k=>[k,s[k]])),metadata:s.metadata};
+  if(id==='classic'){
+   const preview=JSON.parse(execFileSync('python3',[ROOT+'/scripts/demo-ui-final/classic-map-geometry.py'],{cwd:ROOT,timeout:5000,encoding:'utf8'}));
+   return {...BUILTINS.find(x=>x.id===id),...preview};
+  }
+  if(id==='office-fire'){
+   const file='office_fire/office_skeleton.json';
+   const s=JSON.parse(fs.readFileSync(ROOT+'/maps/imported/'+file,'utf8'));
+   return {...BUILTINS.find(x=>x.id===id),geometry:Object.fromEntries(['boundary','walls','rooms','corridors','doors','start_poses','static_obstacles'].map(k=>[k,s[k]||[]])),metadata:s.metadata};
   }
   const entry=readStore().entries.find(x=>x.id===id);if(!entry)fail(404,'地图骨架不存在');
   const data=evidence(entry.upload_id);
@@ -70,7 +74,7 @@ export async function handleMapCatalog(req,res,url,{origin='http://127.0.0.1:417
   if(req.method==='GET'){
    if(url.pathname===base)send(res,200,instance.list());
    else if(url.pathname===base+'/runtime')send(res,200,sceneRuntime());
-   else {const id=url.pathname.slice(base.length+1);if(!/^(classic|lotus|map-[a-f0-9-]{36})$/.test(id))fail(404,'地图骨架不存在');send(res,200,instance.detail(id));}
+   else {const id=url.pathname.slice(base.length+1);if(!/^(classic|office-fire|map-[a-f0-9-]{36})$/.test(id))fail(404,'地图骨架不存在');send(res,200,instance.detail(id));}
   }else if(req.method==='POST'&&[base,base+'/activate'].includes(url.pathname)){
    if(req.headers.origin!==origin||!['same-origin',undefined].includes(req.headers['sec-fetch-site']))fail(403,'只允许同源保存骨架');
    let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>8192)fail(413,'保存请求过大');chunks.push(chunk);}
@@ -96,6 +100,8 @@ export function sceneRuntime(){
   const current=jsonFile(ROOT+'/artifacts/interactive-live/current-scenario.json');
   active={map_id:current?.layout_id==='layout_c'?'classic':null,map_name:current?.layout_id==='layout_c'?'经典地图':'未登记的当前物理场景',seed:current?.seed,layout_id:current?.layout_id,status:'EXISTING_SCENE',activation:'READ_EXISTING_SCENARIO_POINTER'};
  }
+ const builtin=BUILTINS.find(entry=>entry.id===active?.map_id);
+ if(builtin)active={...active,map_name:builtin.name};
  return {active,job:state};
 }
 export function activateScene(value,instance=catalog){

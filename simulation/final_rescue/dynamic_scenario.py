@@ -8,6 +8,10 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry, Path as NavPath
 from std_msgs.msg import String
 ROOT=Path('/data-ssd/zhongchengkai/agnes')
+import sys
+sys.path.insert(0, str(ROOT))
+from simulation.visual_assets.scene_style import person_links
+from simulation.final_rescue.object_spawn import create_model_verified
 OUT=Path(os.environ['FINAL_RUN_DIR'])
 SCENARIO_FILE=Path(os.environ.get('SCENARIO_PRIVATE_FILE', ROOT/'artifacts/interactive-live/scenario-controller/current-private.json'))
 SCENARIO=json.loads(SCENARIO_FILE.read_text()) if SCENARIO_FILE.exists() else {}
@@ -32,6 +36,10 @@ class DynamicScenarioController(Node):
             except FileNotFoundError: pass
         save('dynamic-obstacle-trigger.json',{'triggered':False,'initially_blocking':False,'source':'new Gazebo runtime'})
         threading.Thread(target=self.spawn_randomized_objects,daemon=True).start()
+        # Optional office visual dynamics share this owned process lifecycle.
+        from simulation.final_rescue.office_fire_dynamics import OfficeFireDynamics
+        self.office_fire = OfficeFireDynamics(os.environ.get('SCENARIO_WORLD', ROOT/'simulation/final_rescue/world.sdf'))
+
 
     def spawn_randomized_objects(self):
         """Materialize the seed-selected objects in Gazebo; never publish their truth."""
@@ -41,32 +49,38 @@ class DynamicScenarioController(Node):
                *[(item.get('id','scenario_object'),item.get('x',0),item.get('y',0),item.get('yaw',0),item.get('label','object')) for item in objects]]
         directory=ROOT/'artifacts/interactive-live/scenario-runtime'
         directory.mkdir(parents=True,exist_ok=True)
-        for _ in range(12):
-            try:
-                for name in ('visual_01','visual_02','visual_03'):
-                    subprocess.run(['gz','service','-s',f'/world/{WORLD_NAME}/remove','--reqtype','gz.msgs.Entity','--reptype','gz.msgs.Boolean','--timeout','1000','--req',f'name: "{name}"'],capture_output=True,text=True,timeout=3)
-                evidence=[]
-                for name,x,y,yaw,label in specs:
-                    sdf=directory/f'{SCENARIO.get("seed", "current")}-{name}.sdf'
-                    if label=='person':
-                        body='<link name="body"><visual name="visual"><geometry><box><size>.28 .45 .65</size></box></geometry><material><diffuse>.8 .02 .8 1</diffuse></material></visual></link><link name="head"><pose>0 0 .48 0 0 0</pose><visual name="visual"><geometry><sphere><radius>.17</radius></sphere></geometry><material><diffuse>.8 .55 .4 1</diffuse></material></visual></link>'
-                    elif label=='fire_extinguisher':
-                        body='<link name="body"><pose>0 0 .35 0 0 0</pose><visual name="visual"><geometry><cylinder><radius>.12</radius><length>.65</length></cylinder></geometry><material><diffuse>.8 .02 .02 1</diffuse></material></visual></link>'
-                    elif label=='toolbox':
-                        body='<link name="body"><pose>0 0 .17 0 0 0</pose><visual name="visual"><geometry><box><size>.45 .3 .32</size></box></geometry><material><diffuse>.05 .15 .7 1</diffuse></material></visual></link>'
-                    else:
-                        body='<link name="body"><pose>0 0 .2 0 0 0</pose><visual name="visual"><geometry><box><size>.35 .35 .4</size></box></geometry><material><diffuse>.9 .75 .05 1</diffuse></material></visual></link>'
-                    sdf.write_text(f'<?xml version="1.0"?><sdf version="1.9"><model name="{name}"><static>true</static><pose>{x} {y} 0 {0} {0} {yaw}</pose>{body}</model></sdf>')
-                    result=subprocess.run(['gz','service','-s',f'/world/{WORLD_NAME}/create','--reqtype','gz.msgs.EntityFactory','--reptype','gz.msgs.Boolean','--timeout','2000','--req',f'sdf_filename: "{sdf}"'],capture_output=True,text=True,timeout=4)
-                    evidence.append({'model':name,'label':label,'gazebo_response':result.stdout,'returncode':result.returncode})
-                save('scenario-physical-objects.json',{'seed':SCENARIO.get('seed'),'source':'seeded ScenarioManager -> Gazebo EntityFactory','objects_spawned':evidence,'agent_visible_truth':False})
-                return
-            except Exception as error:
-                save('scenario-physical-objects.json',{'seed':SCENARIO.get('seed'),'source':'seeded ScenarioManager -> Gazebo EntityFactory','objects_spawned':[],'error':type(error).__name__,'agent_visible_truth':False})
-                time.sleep(1)
+        evidence=[]
+        try:
+            for name in ('visual_01','visual_02','visual_03'):
+                subprocess.run(['gz','service','-s',f'/world/{WORLD_NAME}/remove','--reqtype','gz.msgs.Entity','--reptype','gz.msgs.Boolean','--timeout','1000','--req',f'name: "{name}"'],capture_output=True,text=True,timeout=3)
+            for name,x,y,yaw,label in specs:
+                sdf=directory/f'{SCENARIO.get("seed", "current")}-{name}.sdf'
+                if label=='person':
+                    body = person_links()
+                elif label=='fire_extinguisher':
+                    body='<link name="body"><pose>0 0 .35 0 0 0</pose><visual name="visual"><geometry><cylinder><radius>.12</radius><length>.65</length></cylinder></geometry><material><diffuse>.8 .02 .02 1</diffuse></material></visual></link>'
+                elif label=='toolbox':
+                    body='<link name="body"><pose>0 0 .17 0 0 0</pose><visual name="visual"><geometry><box><size>.45 .3 .32</size></box></geometry><material><diffuse>.05 .15 .7 1</diffuse></material></visual></link>'
+                else:
+                    body='<link name="body"><pose>0 0 .2 0 0 0</pose><visual name="visual"><geometry><box><size>.35 .35 .4</size></box></geometry><material><diffuse>.9 .75 .05 1</diffuse></material></visual></link>'
+                sdf.write_text(f'<?xml version="1.0"?><sdf version="1.9"><model name="{name}"><static>true</static><pose>{x} {y} 0 {0} {0} {yaw}</pose>{body}</model></sdf>')
+                pose={'x':x,'y':y,'z':0.,'roll':0.,'pitch':0.,'yaw':yaw}
+                evidence.append(create_model_verified(name,label,pose,sdf,WORLD_NAME))
+                save('scenario-physical-objects.json',{'seed':SCENARIO.get('seed'),'world_name':WORLD_NAME,'recorded_at':time.time(),
+                     'source':'seeded ScenarioManager -> verified Gazebo EntityFactory',
+                     'objects_spawned':evidence,'agent_visible_truth':False})
+        except Exception as error:
+            save('scenario-physical-objects.json',{'seed':SCENARIO.get('seed'),'world_name':WORLD_NAME,'recorded_at':time.time(),
+                 'source':'seeded ScenarioManager -> verified Gazebo EntityFactory','objects_spawned':evidence,
+                 'error':type(error).__name__,'agent_visible_truth':False})
+
+
     def on_scan(self,m):
         self.scan={'timestamp':{'sec':m.header.stamp.sec,'nanosec':m.header.stamp.nanosec},'angle_min':m.angle_min,'angle_increment':m.angle_increment,'ranges':[float(v) if math.isfinite(v) else None for v in m.ranges],'pose':self.pose}
     def on_pose(self,m):
+        # Existing ROS odometry carries the same simulation clock; no extra
+        # message package or Gazebo Python subscription is required.
+        self.office_fire.update_clock(m.header.stamp.sec+m.header.stamp.nanosec/1e9)
         q=m.pose.pose.orientation
         self.pose={'x':m.pose.pose.position.x,'y':m.pose.pose.position.y,'yaw':math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))}
         if not self.history or time.monotonic()-self.history[-1]['wall_monotonic']>.4:
@@ -97,4 +111,6 @@ try:rclpy.spin(n)
 except KeyboardInterrupt:pass
 except Exception:
     if rclpy.ok():raise
-finally:n.destroy_node();rclpy.try_shutdown()
+finally:
+    n.office_fire.close()
+    n.destroy_node();rclpy.try_shutdown()

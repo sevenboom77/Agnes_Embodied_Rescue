@@ -92,7 +92,7 @@
           }
         },
         "disclosure": {
-          "enum": ["standard", "hybrid", "code"]
+          "enum": ["standard", "hybrid", "code", "none"]
         },
         "tools": {
           "type": "object",

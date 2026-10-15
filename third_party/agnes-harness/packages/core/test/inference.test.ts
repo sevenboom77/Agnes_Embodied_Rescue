@@ -192,6 +192,28 @@ const imageModel: ModelRecord = {
 }
 
 describe('Inference segment', () => {
+  it('sends the real user image with an empty model tool catalog in none disclosure', async () => {
+    const provider = fakeProvider([textTurn('{"detections":[]}')])
+    Object.assign(provider, { models: () => [primaryModel(['text', 'image'])] })
+    const { session } = await openSession({
+      provider, registry: readRegistry(),
+      preset: { ...presetDefaults(), disclosure: 'none' },
+      requestMedia: mediaRuntime,
+      imageInputTokenFallback: ({ imageCount }) => ({ tokens: 128, imageCount }),
+    })
+    try {
+      await session.enqueue('next-turn', { actor, content: [
+        { type: 'text', text: 'Classify visible pixels only.' },
+        { type: 'image', data: Buffer.from(mediaJpeg).toString('base64'), mimeType: 'image/jpeg' },
+      ] })
+      await session.acceptInput()
+      await session.runInference()
+      expect(provider.requests).toHaveLength(1)
+      const request = provider.requests[0]!
+      expect(request.tools).toEqual([])
+      expect(request.messages.some(message => message.content.some(block => block.type === 'image'))).toBe(true)
+    } finally { await session.close() }
+  })
   it('captures the post-hook primary prefix for later summary requests', async () => {
     const registry = readRegistry()
     const { session, provider } = await primed([toolTurn('read', { path: 'x' })], registry)

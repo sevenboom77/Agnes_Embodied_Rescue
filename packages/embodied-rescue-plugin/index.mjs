@@ -1,4 +1,5 @@
 import { createCognitiveBackendTools } from './src/backend/tools.ts'
+import { createTargetEvidence } from './src/backend/target-evidence.mjs'
 
 const Kind = Symbol.for('TypeBox.Kind')
 
@@ -91,6 +92,8 @@ export const embodiedRescuePlugin = {
   inject: ['extension'],
   apply(ctx) {
     const agnes = ctx.extension()
+    const targetEvidence = createTargetEvidence()
+    agnes.registerHook('tool_result', payload => { targetEvidence.observe(payload.name, payload.result); return {}; })
     const tools = createCognitiveBackendTools({
       missionId: 'agnes-embodied-rescue',
       goal: 'embodied rescue mission',
@@ -111,7 +114,9 @@ export const embodiedRescuePlugin = {
       parameters: missionResetParameters,
       meta: memoryWriteMeta,
       async execute(input) {
-        return result(tools.mission_reset(input))
+        const reset = tools.mission_reset(input)
+        if (reset.world_memory) targetEvidence.clear()
+        return result(reset)
       },
     })
     agnes.registerTool({
@@ -125,10 +130,13 @@ export const embodiedRescuePlugin = {
     })
     agnes.registerTool({
       name: 'world_memory_update',
-      description: 'Apply a structured World Memory update.',
+      description: 'Apply a structured World Memory update. current_plan must be an array of objects, e.g. [{action_id:"next",action_type:"navigate_to",target:"<observed location>"}], never strings. Mark target_status found only after genuine Agnes camera evidence >=0.80 and still_uncertain=false; action success alone does not confirm a person.',
       parameters: worldMemoryUpdateParameters,
       meta: memoryWriteMeta,
       async execute(input) {
+        if (/^(?:found|secured)$/i.test(input.target_status ?? '') && !targetEvidence.confirmation()) {
+          return {...result({status:'FAILED',code:'TARGET_NOT_CONFIRMED',still_uncertain:true,recovery:'Do not report confirmed personnel. Keep uncertain clues as located, choose another useful view or search another relevant area. Never repeat the same failed view indefinitely.'}),isError:true}
+        }
         return result(tools.world_memory_update(input))
       },
     })
@@ -154,19 +162,22 @@ export const embodiedRescueSkills = {
         'Read MissionState and WorldMemory first. Discover locations and map from Robot MCP.',
         'Derive required work from the user task. Choose reachable rooms from observed topology only while needed to locate the requested target or gather evidence for a requested report. Do not expand a single-target search into an exhaustive room or door survey unless requested; report what remains uninspected.',
         'Traverse routes via registered intermediate waypoints when needed to reach the selected objective; do not impose a fixed room order.',
-        'RGB color/contour perception identifies synthetic demo appearance classes only. A person observation can be reported as the demo missing-person target, never as verified researcher identity.',
+        'Current camera frames are analyzed by Agnes multimodal vision. A verified person observation identifies a demo rescue target, never a verified real-world identity.',
         'Do not repeat rooms already marked searched.',
         'Record navigation failures in blocked_routes and replan.',
         'After three identical low-level ABORTED/TIMEOUT/error_code=104 navigation failures, stop trying new locations. Inspect robot/world state, perform one real recovery, then report NAVIGATION_SYSTEM_UNHEALTHY if it still fails; never retry a broken navigation stack indefinitely.',
         'Each mission starts with fresh mission-scoped plan/action/search/route/target state. Historical observations are usable only with provenance, observed_at, and source, and must not be presented as current observations.',
         'Generate well-formed candidates and use DecisionProvider scoring when it helps choose among relevant next actions. Each candidate requires id, type, and numeric safety/success/cost/information_gain features in [0,1]. If scoring rejects malformed input, correct it once or choose an evidence-based action directly; do not retry unchanged.',
-        'For every actual detection below confidence 0.80, use its detection id for inspect_object while still in its view region. Record active_perception:true for actual successful reinspection, including uncertain results.',
+        'For every actual detection below confidence 0.80, use its detection id for inspect_object while still in its view region. Record active_perception:true for actual successful reinspection, including uncertain results. SUCCEEDED means the inspection executed; still_uncertain:true or target_verified:false means no target confirmation. If it remains uncertain, retain a suspected clue (located), choose another useful view or another relevant area, and do not mark found or end the search.',
       'Verify action results and update WorldMemory after every action: searched_room, known_object, detected_hazard, action, robot_location, last_observation, current_plan. On blocked failure record blocked_route; set replan:true when choosing an alternative.',
-        'navigate_to may return status PENDING or action_status EXECUTING when a real Nav2 goal is still running. In that case do not issue another navigation or treat it as failure: call get_robot_state until navigation_terminal_known is true, then use the reported SUCCEEDED, ABORTED, CANCELED, or UNKNOWN terminal state. Never report navigation success from PENDING.',
-        'Before finishing, read mission_get_state and world_memory_get one last time.',
+        'navigate_to may return status PENDING or action_status EXECUTING when a real Nav2 goal is still running. If it returns SUCCEEDED, use that terminal result directly without a redundant state read. For PENDING, do not issue another navigation or treat it as failure: call get_robot_state for the matching navigation_operation_id until navigation_terminal_known is true, then use the reported SUCCEEDED, ABORTED, CANCELED, or UNKNOWN terminal state. Never report navigation success from PENDING.',
+        'get_world_state and get_observation each acquire a camera frame and run Agnes vision. Use get_robot_state for navigation and scan status polling. Reuse completed inspect_room evidence for the unchanged scan and available open_door verification.fresh_camera_observation when camera_after_motion is true; request new camera evidence after further motion or failed perception. Do not duplicate image inference just to verify a terminal action already supported by its structured evidence.',
+        'Memory fields must follow the tool schema: current_plan is an array of objects with action_id/action_type/target; never use plain strings. After invalid arguments, correct the shape once; do not issue unchanged calls. Before finishing, read mission_get_state and world_memory_get one last time.',
         'Report confirmed personnel or target status, route blockage or hazards, and actively verified important objects when evidence exists. For a risk report, distinguish observed hazards from unobserved areas and do not claim a complete building survey unless requested.',
         'Do not call mission_reset after the target is found; reset only when starting a new mission.',
       ].join('\n'),
     })
   },
 }
+
+export { presets } from './src/sensor-image-preset.mjs'

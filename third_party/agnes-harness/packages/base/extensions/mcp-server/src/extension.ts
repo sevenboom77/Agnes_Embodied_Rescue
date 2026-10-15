@@ -2,7 +2,7 @@ import { defineExtension, type ExtensionFactory } from '@agnes/extension-api'
 import { catalogInfoOf } from '../../../src/mcp/catalog-info.js'
 import type { McpServerConfig } from '../../../src/mcp/config.js'
 import { connectMcp } from '../../../src/mcp/connect.js'
-import type { McpConnection } from '../../../src/mcp/register.js'
+import type { McpConnection, McpMediaLimits } from '../../../src/mcp/register.js'
 import { registerRemoteToolsStrict } from '../../../src/mcp/register.js'
 import type { McpCatalogHub } from './catalog-hub.js'
 import {
@@ -19,6 +19,8 @@ export type McpServerExtensionDeps = Readonly<{
   /** Overridable for tests; production wiring binds this to `connectMcp` (src/mcp/connect.ts). */
   connect?(cfg: McpServerConfig, signal: AbortSignal): Promise<McpConnection>
   policy?: ReconnectPolicy
+  /** Explicit Host-reviewed image policy; omitted keeps MCP image input disabled. */
+  mediaLimits?: McpMediaLimits
   /** Handed the first connection attempt's outcome, which settles once this server's tools are
    * registered or the attempt failed. The worker waits on it at its turn boundary (design §3.8,
    * D120) so a newly enabled server is usable on the next turn; the row itself never waits. */
@@ -88,6 +90,7 @@ export function mcpServerExtension(cfg: McpServerConfig, deps: McpServerExtensio
               ? { onRemoteCatalog: (remote, skipped) => reportCatalog(catalogInfoOf(remote, skipped)) }
               : {}),
             ownsConnection: false,
+            ...(deps.mediaLimits ? { mediaLimits: deps.mediaLimits } : {}),
           }),
         sleep: abortableSleep,
         ...(deps.onStatus ? { onStatus: deps.onStatus } : {}),

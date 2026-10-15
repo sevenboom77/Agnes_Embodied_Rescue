@@ -260,6 +260,77 @@ describe('createMcpRowRuntime against a real Host', () => {
 })
 
 describe('createMcpRowRuntime keeps a row live against the real tool registry', () => {
+  it.each([
+    { policy: 'configured', maxBytesPerImage: 1024, succeeds: true },
+    { policy: 'omitted', maxBytesPerImage: undefined, succeeds: false },
+    { policy: 'over budget', maxBytesPerImage: 1, succeeds: false },
+  ])('handles MCP camera images with $policy media limits', async ({ maxBytesPerImage, succeeds }) => {
+    const host = await testHost()
+    const opener: McpServerOpener = {
+      async connect(definition) {
+        return {
+          id: definition.serverId,
+          async listTools() {
+            return [{ name: 'camera', description: 'camera', inputSchema: { type: 'object' } }]
+          },
+          async callTool() {
+            return {
+              content: [
+                {
+                  type: 'image' as const,
+                  mimeType: 'image/png',
+                  data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+                },
+              ],
+            }
+          },
+          async close() {},
+        }
+      },
+    }
+    const mediaLimits =
+      maxBytesPerImage === undefined
+        ? undefined
+        : {
+            maxBytesPerImage,
+            maxPixelsPerImage: 1,
+            maxAggregateBytes: 1024,
+            maxAggregatePixels: 1,
+            maxImages: 1,
+            maxBlocks: 2,
+          }
+    await createMcpRowRuntime({ host, opener, ...(mediaLimits ? { mediaLimits } : {}) }).apply([
+      entry('alpha'),
+    ])
+    const session = await host.createSession({ key: 'camera', cwd: hostDir })
+    const camera = session.currentTools().resolve(`${ALPHA_PREFIX}camera`)
+    if (!camera) throw new Error('camera tool was not registered')
+    const writes: Uint8Array[] = []
+    const result = await camera.execute({}, {
+      signal: new AbortController().signal,
+      session: { key: session.key, lane: session.lane, workspaceRoot: hostDir },
+      artifacts: {
+        async put(bytes: Uint8Array, meta?: { mime?: string }) {
+          writes.push(bytes)
+          return {
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            size: bytes.byteLength,
+            mime: meta?.mime,
+          }
+        },
+      },
+    } as never)
+    expect(writes).toHaveLength(succeeds ? 1 : 0)
+    expect(result.isError === true, JSON.stringify(result)).toBe(!succeeds)
+    expect(result.content.some((block) => block.type === 'image')).toBe(succeeds)
+    if (succeeds)
+      expect(result.content).toContainEqual({
+        type: 'image',
+        ref: { sha256: expect.any(String), size: 69, mime: 'image/png' },
+        mime: 'image/png',
+      })
+  })
+
   it('re-syncs on tools/list_changed and re-registers after an unexpected disconnect, as a bound session sees it', async () => {
     const host = await testHost()
     const live: Array<{ fireClose(): void; fireToolsChanged(): void }> = []

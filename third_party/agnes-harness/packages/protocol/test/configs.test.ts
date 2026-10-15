@@ -43,3 +43,9 @@ describe('preset document contract', () => {
     ).toBe(false)
   })
 })
+
+it('admits none disclosure while rejecting unsupported tool modes', () => {
+  expect(validatePreset({ name: 'sensor-image', extends: 'standard', disclosure: 'none',
+    model: { prompt_sections: [] }, tools: { core: [] }, budget: { max_steps: 1 } }).ok).toBe(true)
+  expect(validatePreset({ name: 'sensor-image', disclosure: 'disabled' }).ok).toBe(false)
+})

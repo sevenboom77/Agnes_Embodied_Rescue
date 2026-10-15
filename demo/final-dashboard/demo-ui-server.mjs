@@ -15,7 +15,45 @@ export function demoUiState(){
  const registryPath=scenario?.layout?.registry?path.resolve(ROOT,scenario.layout.registry):ROOT+'/simulation/final_rescue/world_registry.json';
  const registry=registryPath.startsWith(ROOT+'/')?read(registryPath):null;
  const prior=read(ROOT+'/artifacts/interactive-live/current.json');
- return {mode:'LIVE',server_time:new Date().toISOString(),native:config?{...config,ws_url:discovery?.web?.url||config.ws_url,daemon_ready:discovery?.ready===true,observer_age_ms:observerAge,observer_fresh:session?.observer_connected===true&&!session?.observer_error&&observerAge!==null&&observerAge>=0&&observerAge<4000,provider_admission:provider?{pass:provider.pass,generated_at:provider.generated_at}:null}:null,session,ros:ros?{...ros,age_ms:rosAge,fresh:rosAge<2500,pose_fresh:rosAge<2500&&ros.pose_age_ms!==null&&ros.pose_age_ms<2500}:null,camera:{...camera,age_ms:cameraAge,live:cameraFresh(camera,now),image_url:'/api/demo-ui/camera.png'},registry:registry?{locations:registry.locations,doors:registry.doors}:null,scenario:scenario?{seed:scenario.seed,layout_id:scenario.layout_id}:null,previous_mission:prior?{mission_id:prior.mission_id,status:prior.status,task:prior.task,historical:true}:null};
+ return {mode:'LIVE',server_time:new Date().toISOString(),native:config?{...config,ws_url:discovery?.web?.url||config.ws_url,daemon_ready:discovery?.ready===true,observer_age_ms:observerAge,observer_fresh:session?.observer_connected===true&&!session?.observer_error&&observerAge!==null&&observerAge>=0&&observerAge<4000,provider_admission:provider?{pass:provider.pass,generated_at:provider.generated_at}:null}:null,session,ros:ros?{...ros,age_ms:rosAge,fresh:rosAge<2500,pose_fresh:rosAge<2500&&ros.pose_age_ms!==null&&ros.pose_age_ms<2500}:null,camera:{...camera,age_ms:cameraAge,live:cameraFresh(camera,now),image_url:'/api/demo-ui/camera.jpg'},registry:registry?{locations:registry.locations,doors:registry.doors}:null,scenario:scenario?{seed:scenario.seed,layout_id:scenario.layout_id}:null,previous_mission:prior?{mission_id:prior.mission_id,status:prior.status,task:prior.task,historical:true}:null};
+}
+const CAMERA_DIR=ROOT+'/artifacts/interactive-live/camera';
+export function nextCameraFrame(req,res,after,{
+ now=Date.now,readMeta=()=>read(CAMERA_DIR+'/latest-meta.json'),
+ readFrame=name=>fs.readFileSync(CAMERA_DIR+'/'+name),pollMs=16,waitMs=1600,preferDisplay=false
+}={}){
+ let timer=null,closed=false;
+ const deadline=now()+waitMs;
+ const finish=()=>{closed=true;if(timer)clearTimeout(timer);res.off('close',finish);req.off('aborted',finish);};
+ res.on('close',finish);req.on('aborted',finish);
+ function send(){
+  if(closed)return;
+  const meta=readMeta();
+  if(!cameraFresh(meta,now())){
+   finish();json(res,{error:'NO_LIVE_CAMERA'},503);return;
+  }
+  if(after&&meta.frame_id===after){
+   if(now()<deadline){timer=setTimeout(send,pollMs);return;}
+   finish();res.writeHead(204,{'cache-control':'no-store'});res.end();return;
+  }
+  // JPEG is a display derivative of the exact same immutable sensor frame.
+  // Keep camera.png and image_file lossless for evidence and model consumers.
+  const jpeg=preferDisplay&&meta.display_file!=null;
+  const name=jpeg?meta.display_file:meta.image_file;
+  const valid=jpeg
+   ? typeof name==='string'&&/^live-[a-zA-Z0-9-]+\.jpg$/.test(name)&&name===meta.frame_id+'.jpg'&&meta.display_mime_type==='image/jpeg'
+   : !name||typeof name==='string'&&/^live-[a-zA-Z0-9-]+\.png$/.test(name);
+  if(!valid){finish();json(res,{error:'INVALID_FRAME'},503);return;}
+  try{
+   const bytes=readFrame(name||'latest.png');
+   finish();
+   res.writeHead(200,{'content-type':jpeg?'image/jpeg':'image/png','cache-control':'no-store',
+    'x-content-type-options':'nosniff','X-Frame-Id':meta.frame_id,
+    'X-Captured-At':meta.captured_at,'X-Server-Time':String(now()),'X-Sensor-Timestamp':JSON.stringify(meta.timestamp)});
+   res.end(bytes);
+  }catch{finish();json(res,{error:'NO_LIVE_CAMERA'},503);}
+ }
+ send();
 }
 export function handleDemoUi(req,res,url){
  if(!['GET','HEAD'].includes(req.method))return false;
@@ -29,13 +67,8 @@ export function handleDemoUi(req,res,url){
  if(url.pathname==='/api/demo-ui/state'){json(res,demoUiState());return true;}
  if(url.pathname==='/api/demo-ui/session'){json(res,read(OUT+'/native-session-state.json',{error:'observer_unavailable'}));return true;}
  if(url.pathname==='/api/demo-ui/map.png'){file(res,OUT+'/ros-map.png','image/png');return true;}
- if(url.pathname==='/api/demo-ui/camera.png'){
-   const meta=read(ROOT+'/artifacts/interactive-live/camera/latest-meta.json');
-   const age=Date.now()-Date.parse(meta?.captured_at||'');
-   if(!cameraFresh(meta)){json(res,{error:'NO_LIVE_CAMERA',age_ms:Number.isFinite(age)?age:null},503);return true;}
-   // The adapter atomically renames PNG frames. No multipart PNG dependency.
-   res.setHeader('X-Frame-Id',meta.frame_id);res.setHeader('X-Captured-At',meta.captured_at);
-   file(res,ROOT+'/artifacts/interactive-live/camera/latest.png','image/png');return true;
+ if(url.pathname==='/api/demo-ui/camera.png'||url.pathname==='/api/demo-ui/camera.jpg'){
+       nextCameraFrame(req,res,url.searchParams.get('after'),{preferDisplay:url.pathname.endsWith('.jpg')});return true;
  }
  return false;
 }

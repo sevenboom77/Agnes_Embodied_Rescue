@@ -8,10 +8,12 @@ runtime scenario controller and are never compiled into the map prior.
 from __future__ import annotations
 import argparse, hashlib, json, math, os, pathlib, sys
 from collections import deque
-import copy
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path('/data-ssd/zhongchengkai/agnes').resolve()
+sys.path.insert(0, str(ROOT))
+from simulation.visual_assets.scene_style import apply_world_style
+from simulation.visual_assets.door_geometry import door_sdf
 ROBOT_RADIUS = 0.38
 INFLATION = 0.12
 
@@ -96,6 +98,24 @@ def validate(skeleton):
         connects = door.get('connects', [])
         if len(connects) != 2 or not all(x in ids for x in connects): errors.append(f'DOOR_CONNECTIVITY:{door.get("id")}')
         if door.get('mechanism', 'hinge') not in ('hinge', 'swing', 'revolving'): warnings.append(f'UNKNOWN_DOOR_MECHANISM:{door.get("id")}')
+    obstacles = skeleton.get('static_obstacles', [])
+    if not isinstance(obstacles, list):
+        errors.append('STATIC_OBSTACLES_MUST_BE_ARRAY')
+    elif obstacles:
+        if skeleton.get('metadata', {}).get('visual_style') != 'office_fire':
+            errors.append('STATIC_OFFICE_OBSTACLES_REQUIRE_OFFICE_STYLE')
+        names = set()
+        for obstacle in obstacles:
+            b = obstacle.get('bounds', {})
+            valid = all(finite(b.get(k)) for k in bounds)
+            if not valid or b['min_x'] >= b['max_x'] or b['min_y'] >= b['max_y']:
+                errors.append('INVALID_STATIC_OBSTACLE_BOUNDS')
+                continue
+            if not all(finite(boundary.get(k)) for k in bounds) or not (boundary['min_x'] <= b['min_x'] < b['max_x'] <= boundary['max_x'] and boundary['min_y'] <= b['min_y'] < b['max_y'] <= boundary['max_y']):
+                errors.append('STATIC_OBSTACLE_OUTSIDE_BOUNDARY')
+            if not obstacle.get('id') or obstacle['id'] in names:
+                errors.append('DUPLICATE_OR_EMPTY_STATIC_OBSTACLE_ID')
+            names.add(obstacle.get('id'))
     starts = skeleton.get('start_poses', [])
     if not starts: errors.append('START_POSE_MISSING')
     for start in starts:
@@ -165,18 +185,41 @@ def registry(s):
 
 def pgm(s, out):
     boundary, res = s['boundary'], float(s.get('optional_navigation_constraints', {}).get('resolution', 0.1))
-    width, height = int(math.ceil((boundary['max_x']-boundary['min_x'])/res))+1, int(math.ceil((boundary['max_y']-boundary['min_y'])/res))+1
+    width = int(math.ceil((boundary['max_x']-boundary['min_x'])/res))
+    height = int(math.ceil((boundary['max_y']-boundary['min_y'])/res))
     pixels = bytearray([254] * (width * height))
-    def cell(x, y): return int(round((x-boundary['min_x'])/res)), height-1-int(round((y-boundary['min_y'])/res))
-    def mark(x, y):
-        i, j = cell(x, y)
-        if 0 <= i < width and 0 <= j < height: pixels[j*width+i] = 0
+    ox, oy = boundary['min_x'], boundary['min_y']
+    def cells(x0, y0, x1, y1):
+        # Cell extents, not rounded grid vertices. Touching at an edge alone
+        # must not add a whole extra wall cell inside a doorway.
+        for j in range(max(0, int(math.floor((y0-oy)/res))), min(height, int(math.ceil((y1-oy)/res)))):
+            for i in range(max(0, int(math.floor((x0-ox)/res))), min(width, int(math.ceil((x1-ox)/res)))):
+                yield i, j, ox+(i+.5)*res, oy+(j+.5)*res
+    def mark(i, j):
+        pixels[(height-1-j)*width+i] = 0
     for wall in s.get('walls', []):
+        thickness = float(wall.get('thickness', 0.15))
         for a, b in wall_segments(wall, s):
-            length = distance(a, b); steps = max(1, int(length/res*2))
-            for k in range(steps+1): mark(a[0]+(b[0]-a[0])*k/steps, a[1]+(b[1]-a[1])*k/steps)
+            length = distance(a, b)
+            ux, uy = (b[0]-a[0])/length, (b[1]-a[1])/length
+            nx, ny = -uy, ux
+            ex, ey = abs(nx)*thickness/2, abs(ny)*thickness/2
+            radius = res/2*(abs(ux)+abs(uy))
+            for i,j,x,y in cells(min(a[0],b[0])-ex, min(a[1],b[1])-ey,
+                                 max(a[0],b[0])+ex, max(a[1],b[1])+ey):
+                along = (x-a[0])*ux+(y-a[1])*uy
+                across = (x-a[0])*nx+(y-a[1])*ny
+                # Separating-axis overlap of a real wall box and a map cell.
+                if (-radius+1e-9 < along < length+radius-1e-9 and
+                        abs(across) < thickness/2+radius-1e-9):
+                    mark(i,j)
+    # Conservative authored furniture extents; live door panels are not baked in.
+    for obstacle in s.get('static_obstacles', []):
+        b = obstacle['bounds']
+        for i,j,_,_ in cells(b['min_x'],b['min_y'],b['max_x'],b['max_y']):
+            mark(i,j)
     p = out/'map.pgm'; p.write_bytes(b'P5\n%d %d\n255\n'% (width,height) + pixels)
-    (out/'map.yaml').write_text(f'image: map.pgm\nmode: trinary\nresolution: {res}\norigin: [{boundary["min_x"]}, {boundary["min_y"]}, 0.0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n')
+    (out/'map.yaml').write_text(f'image: map.pgm\nmode: trinary\nresolution: {res}\norigin: [{ox}, {oy}, 0.0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n')
 
 def wall_segments(wall, skeleton):
     """Split a canonical wall at canonical door openings.
@@ -208,48 +251,19 @@ def wall_segments(wall, skeleton):
     if cursor < length: spans.append((cursor, length))
     return [([a[0] + dx*t0/length, a[1] + dy*t0/length], [a[0] + dx*t1/length, a[1] + dy*t1/length]) for t0, t1 in spans]
 
-def apply_classic_visual_style(world):
-    # Classic layout is the single visual reference; never copy its geometry.
-    reference = ET.parse(ROOT/'simulation/scenarios/layout_c/world.sdf').getroot().find('world')
-    for tag in ('scene', 'light'):
-        for old in list(world.findall(tag)):
-            world.remove(old)
-        for node in reference.findall(tag):
-            world.append(copy.deepcopy(node))
-    ground_material = reference.find('./model[@name="ground"]/link/visual/material')
-    palette = []
-    for model in reference.findall('model'):
-        if model.get('name', '').startswith('wall_'):
-            material = model.find('./link/visual/material')
-            key = ET.tostring(material)
-            if all(ET.tostring(item) != key for item in palette):
-                palette.append(material)
-    assert ground_material is not None and palette, 'CLASSIC_VISUAL_REFERENCE_REQUIRED'
-    wall_index = 0
-    for model in world.findall('model'):
-        name = model.get('name', '')
-        if name == 'ground':
-            material = ground_material
-        elif name.startswith('wall_'):
-            material = palette[wall_index % len(palette)]
-            wall_index += 1
-        else:
-            continue
-        for visual in model.findall('./link/visual'):
-            for old in list(visual.findall('material')):
-                visual.remove(old)
-            visual.append(copy.deepcopy(material))
 
 def sdf(s, out):
     name = s.get('metadata', {}).get('id', 'imported_building').replace('-', '_')
     start = (s.get('start_poses') or [{'x': 0, 'y': 0, 'yaw': 0}])[0]
+    # Office eye level: 0.16 m chassis origin + 1.19 m camera = 1.35 m above floor.
+    camera_z = 1.19 if s.get('metadata', {}).get('visual_style') == 'office_fire' else .22
     robot = f'''<model name="imported_rescue_robot"><pose>{start['x']} {start['y']} 0.16 0 0 {start.get('yaw', 0)}</pose>
       <link name="base_link"><inertial><mass>4</mass><inertia><ixx>0.08</ixx><iyy>0.1</iyy><izz>0.15</izz></inertia></inertial><collision name="base_collision"><geometry><box><size>0.6 0.4 0.15</size></box></geometry></collision><visual name="base_visual"><geometry><box><size>0.6 0.4 0.15</size></box></geometry></visual></link>
       <link name="left_wheel"><pose>0.15 0.25 -0.06 -1.57079632679 0 0</pose><inertial><mass>0.5</mass><inertia><ixx>0.0015</ixx><iyy>0.0015</iyy><izz>0.0025</izz></inertia></inertial><collision name="left_collision"><geometry><cylinder><radius>0.1</radius><length>0.06</length></cylinder></geometry></collision></link>
       <link name="right_wheel"><pose>0.15 -0.25 -0.06 -1.57079632679 0 0</pose><inertial><mass>0.5</mass><inertia><ixx>0.0015</ixx><iyy>0.0015</iyy><izz>0.0025</izz></inertia></inertial><collision name="right_collision"><geometry><cylinder><radius>0.1</radius><length>0.06</length></cylinder></geometry></collision></link>
       <link name="caster"><pose>-0.22 0 -0.11 0 0 0</pose><inertial><mass>0.1</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia></inertial><collision name="caster_collision"><geometry><sphere><radius>0.05</radius></sphere></geometry></collision></link>
       <link name="lidar_link"><pose>0.1 0 0.22 0 0 0</pose><sensor name="lidar" type="gpu_lidar"><always_on>true</always_on><update_rate>10</update_rate><topic>/scan</topic><gz_frame_id>lidar_link</gz_frame_id><lidar><scan><horizontal><samples>360</samples><resolution>1</resolution><min_angle>-3.14159265359</min_angle><max_angle>3.14159265359</max_angle></horizontal></scan><range><min>0.1</min><max>12</max><resolution>0.01</resolution></range></lidar></sensor></link>
-      <link name="camera_link"><pose>0.25 0 0.22 0 0 0</pose><sensor name="camera" type="camera"><always_on>true</always_on><update_rate>5</update_rate><topic>/camera/image_raw</topic><gz_frame_id>camera_link</gz_frame_id><camera><horizontal_fov>1.3</horizontal_fov><image><width>320</width><height>240</height><format>R8G8B8</format></image><clip><near>0.1</near><far>20</far></clip><camera_info_topic>/camera/camera_info</camera_info_topic></camera></sensor></link>
+      <link name="camera_link"><pose>0.25 0 {camera_z} 0 0 0</pose><sensor name="camera" type="camera"><always_on>true</always_on><update_rate>30</update_rate><topic>/camera/image_raw</topic><gz_frame_id>camera_link</gz_frame_id><camera><horizontal_fov>1.3</horizontal_fov><image><width>640</width><height>480</height><format>R8G8B8</format></image><clip><near>0.1</near><far>20</far></clip><camera_info_topic>/camera/camera_info</camera_info_topic></camera></sensor></link>
       <joint name="left_joint" type="revolute"><parent>base_link</parent><child>left_wheel</child><axis><xyz>0 0 1</xyz></axis></joint><joint name="right_joint" type="revolute"><parent>base_link</parent><child>right_wheel</child><axis><xyz>0 0 1</xyz></axis></joint><joint name="caster_joint" type="ball"><parent>base_link</parent><child>caster</child></joint><joint name="lidar_fixed" type="fixed"><parent>base_link</parent><child>lidar_link</child></joint><joint name="camera_fixed" type="fixed"><parent>base_link</parent><child>camera_link</child></joint>
       <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive"><left_joint>left_joint</left_joint><right_joint>right_joint</right_joint><wheel_separation>0.5</wheel_separation><wheel_radius>0.1</wheel_radius><topic>/cmd_vel</topic><odom_topic>/odom</odom_topic><frame_id>odom</frame_id><child_frame_id>base_link</child_frame_id><odom_publish_frequency>30</odom_publish_frequency></plugin></model>'''
     parts = ['<?xml version="1.0"?><sdf version="1.9"><world name="%s"><physics name="physics" type="ignored"><max_step_size>0.001</max_step_size><real_time_factor>1</real_time_factor></physics><plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/><plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/><plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/><plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"><render_engine>ogre2</render_engine></plugin><scene><ambient>0.5 0.5 0.5 1</ambient><background>0.7 0.7 0.7 1</background></scene><light name="sun" type="directional"><pose>0 0 10 0 0 0</pose><diffuse>0.8 0.8 0.8 1</diffuse><direction>-0.5 0.1 -1</direction></light><gravity>0 0 -9.8</gravity><model name="ground"><static>true</static><link name="link"><collision name="c"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision><visual name="v"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></visual></link></model>%s' % (name, robot)]
@@ -258,16 +272,16 @@ def sdf(s, out):
             dx,dy=b[0]-a[0],b[1]-a[1]; length=math.hypot(dx,dy); yaw=math.atan2(dy,dx); x,y=(a[0]+b[0])/2,(a[1]+b[1])/2; t=wall.get('thickness',0.15); h=wall.get('height',2.4)
             parts.append(f'<model name="wall_{wall["id"]}_{index}"><static>true</static><pose>{x} {y} {h/2} 0 0 {yaw}</pose><link name="link"><collision name="c"><geometry><box><size>{length} {t} {h}</size></box></geometry></collision><visual name="v"><geometry><box><size>{length} {t} {h}</size></box></geometry><material><ambient>0.45 0.48 0.5 1</ambient></material></visual></link></model>')
     for door in s.get('doors', []):
-        x,y=door['at']; width=door.get('width',1.0); h=door.get('height',2.2); joint=f'{door["id"]}_hinge'; orientation=door.get('orientation', 0)
-        # A jammed validation skeleton may specify a real zero-opening joint
-        # limit.  Normal imported maps omit this field and retain the ordinary
-        # 0..1.57 rad hinge.  The limit is enforced by Gazebo, so the
-        # interaction service can only observe the physical failure.
-        upper = 0.0 if door.get('runtime_jammed') is True else 1.57
-        parts.append(f'<model name="door_{door["id"]}"><pose>{x} {y} 0 0 0 0</pose><link name="frame"><inertial><mass>100</mass></inertial></link><link name="panel"><pose>0 0 {h/2} 0 0 {orientation}</pose><inertial><mass>20</mass><inertia><ixx>1</ixx><iyy>1</iyy><izz>1</izz></inertia></inertial><collision name="c"><geometry><box><size>{width} 0.08 {h}</size></box></geometry></collision><visual name="v"><geometry><box><size>{width} 0.08 {h}</size></box></geometry><material><ambient>0.85 0.55 0.12 1</ambient><diffuse>0.85 0.55 0.12 1</diffuse><emissive>0.12 0.06 0.01 1</emissive></material></visual></link><joint name="{joint}" type="revolute"><parent>frame</parent><child>panel</child><axis><xyz>0 0 1</xyz><limit><lower>0</lower><upper>{upper}</upper></limit></axis></joint><plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController"><joint_name>{joint}</joint_name></plugin></model><joint name="anchor_{door["id"]}" type="fixed"><parent>world</parent><child>door_{door["id"]}::frame</child></joint>')
+        parts.append(door_sdf(door))
     parts.append('</world></sdf>')
     document = ET.fromstring(''.join(parts))
-    apply_classic_visual_style(document.find('world'))
+    apply_world_style(document.find('world'), out)
+    if s.get('metadata', {}).get('visual_style') == 'lotus_fire':
+        from simulation.visual_assets.fire_scene import apply_fire_style
+        apply_fire_style(document.find('world'), out)
+    elif s.get('metadata', {}).get('visual_style') == 'office_fire':
+        from simulation.visual_assets.office_scene import apply_office_style
+        apply_office_style(document.find('world'), out, s)
     (out/'world.sdf').write_text(ET.tostring(document, encoding='unicode'))
 
 def compile_map(s, out):

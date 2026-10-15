@@ -368,6 +368,9 @@ export function discloseTools(s: SessionImpl): string[] {
   const eager = (): string[] => snap.defs.filter((d) => d.meta.deferLoading !== true).map((d) => d.name)
   let names: string[]
   switch (s.preset.disclosure) {
+    case 'none':
+      names = []
+      break
     case 'code':
       names = eager().filter((name) => name === 'run_code')
       break
