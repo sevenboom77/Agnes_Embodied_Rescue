@@ -10,8 +10,6 @@
 
 2026 年江苏省 AI+科学与工程创新实践黑客松高校组参赛项目
 
-**硕博组 G002 · 今天不想做正事**
-
 ## 演示视频
 
 [![Gazebo 机器人第一视角与实时位置导航的演示实录截帧](docs/assets/demo-runtime.jpg)](https://www.bilibili.com/video/BV1F1J66YEkB/)
